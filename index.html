@@ -1,0 +1,1355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Heptagon Trials — one brief, three models, two hundred balls</title>
+<meta name="description" content="Three AI models were given the same prompt. Each returned a single-file physics simulation of two hundred balls inside a spinning heptagon. Here are all three, running, unmodified.">
+<meta name="color-scheme" content="light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:      oklch(0.953 0.006 72);
+  --paper-2:    oklch(0.921 0.008 72);
+  --paper-3:    oklch(0.884 0.009 72);
+  --ink:        oklch(0.203 0.012 72);
+  --ink-2:      oklch(0.348 0.011 72);
+  --ink-3:      oklch(0.502 0.010 72);
+  --rule:       oklch(0.845 0.009 72);
+  --rule-2:     oklch(0.782 0.010 72);
+  --accent:     oklch(0.545 0.190 31);
+  --accent-in:  oklch(0.470 0.172 30);
+  --accent-dk:  oklch(0.455 0.168 30);
+  --plate:      oklch(0.171 0.012 265);
+  --focus:      oklch(0.455 0.168 30);
+
+  --step--1: clamp(0.750rem, 0.735rem + 0.08vw, 0.8125rem);
+  --step-0:  clamp(0.9375rem, 0.918rem + 0.10vw, 1.0rem);
+  --step-1:  clamp(1.0625rem, 1.01rem + 0.26vw, 1.25rem);
+  --step-2:  clamp(1.3125rem, 1.17rem + 0.72vw, 1.75rem);
+  --step-3:  clamp(1.625rem, 1.30rem + 1.63vw, 2.5rem);
+  --step-4:  clamp(2.3125rem, 1.38rem + 4.15vw, 4.5rem);
+
+  --gutter: clamp(1.25rem, 0.6rem + 2.4vw, 2.75rem);
+  --wrap: 86rem;
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+
+html{ -webkit-text-size-adjust:100%; }
+
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink-2);
+  font-family:Archivo, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size:var(--step-0);
+  line-height:1.55;
+  font-optical-sizing:auto;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  overflow-x:hidden;
+}
+
+h1,h2,h3,h4,p,figure,blockquote,dl,dd{ margin:0; }
+ul,ol{ margin:0; padding:0; list-style:none; }
+img,svg,iframe{ display:block; }
+button,input,select{ font:inherit; color:inherit; }
+[hidden]{ display:none !important; }
+[id]{ scroll-margin-block-start:5rem; }
+
+:focus-visible{ outline:2px solid var(--focus); outline-offset:2px; border-radius:2px; }
+
+::selection{ background:oklch(0.545 0.190 31 / 0.22); color:var(--ink); }
+
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0;
+}
+
+.skip-link{
+  position:absolute; inset-inline-start:-999px; top:0; z-index:50;
+  background:var(--ink); color:var(--paper);
+  padding:0.75rem 1.25rem; text-decoration:none; font-weight:600;
+}
+.skip-link:focus{ inset-inline-start:0.75rem; top:0.75rem; }
+
+.wrap{
+  width:min(100% - (var(--gutter) * 2), var(--wrap));
+  margin-inline:auto;
+}
+
+/* ---------- type ---------- */
+
+.eyebrow{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:var(--step--1);
+  font-weight:500;
+  letter-spacing:0.18em;
+  text-transform:uppercase;
+  color:var(--accent-dk);
+  display:flex; align-items:center; gap:0.75rem;
+}
+.eyebrow::after{
+  content:""; flex:1; height:1px; background:var(--rule-2);
+}
+
+h1{
+  font-size:var(--step-4);
+  font-weight:900;
+  line-height:0.96;
+  letter-spacing:-0.035em;
+  color:var(--ink);
+  text-wrap:balance;
+  max-width:18ch;
+}
+
+h2{
+  font-size:var(--step-3);
+  font-weight:800;
+  line-height:1.04;
+  letter-spacing:-0.025em;
+  color:var(--ink);
+  text-wrap:balance;
+  max-width:22ch;
+}
+
+h3{
+  font-size:var(--step-1);
+  font-weight:700;
+  line-height:1.2;
+  letter-spacing:-0.015em;
+  color:var(--ink);
+  overflow-wrap:break-word;
+}
+
+.lead{
+  font-size:var(--step-1);
+  line-height:1.5;
+  color:var(--ink-2);
+  max-width:62ch;
+  text-wrap:pretty;
+}
+
+.prose{ max-width:64ch; }
+
+.mono{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-variant-numeric:tabular-nums;
+}
+
+section{ padding-block:clamp(3.5rem, 2rem + 5vw, 6rem); }
+section + section{ border-block-start:1px solid var(--rule); }
+
+.section-head{
+  display:grid;
+  gap:1.25rem;
+  margin-block-end:clamp(2rem, 1rem + 2.5vw, 3.25rem);
+}
+.section-head .eyebrow{ max-width:22rem; }
+
+/* ---------- buttons ---------- */
+
+.btn{
+  --btn-bg:transparent;
+  --btn-fg:var(--ink);
+  --btn-bd:var(--rule-2);
+  display:inline-flex; align-items:center; justify-content:center; gap:0.5rem;
+  min-height:2.875rem;
+  padding:0.6rem 1.25rem;
+  background:var(--btn-bg);
+  color:var(--btn-fg);
+  border:1px solid var(--btn-bd);
+  border-radius:2px;
+  font-size:var(--step-0);
+  font-weight:600;
+  letter-spacing:-0.005em;
+  text-decoration:none;
+  cursor:pointer;
+  transition:background-color .15s cubic-bezier(.2,0,0,1), border-color .15s cubic-bezier(.2,0,0,1), color .15s cubic-bezier(.2,0,0,1), transform .1s cubic-bezier(.2,0,0,1);
+}
+.btn:hover{ --btn-bd:var(--ink); }
+.btn:active{ transform:scale(0.985); }
+.btn[disabled]{ cursor:not-allowed; opacity:0.45; }
+
+.btn-solid{ --btn-bg:var(--accent); --btn-fg:var(--paper); --btn-bd:var(--accent); }
+.btn-solid:hover{ --btn-bg:var(--accent-dk); --btn-bd:var(--accent-dk); }
+
+.btn-sm{
+  min-height:2.25rem;
+  padding:0.35rem 0.75rem;
+  font-size:var(--step--1);
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  font-weight:500;
+}
+
+.btn-quiet{ --btn-bd:transparent; color:var(--ink-2); }
+.btn-quiet:hover{ --btn-bd:var(--rule-2); color:var(--ink); }
+
+.btn-row{ display:flex; flex-wrap:wrap; gap:0.75rem; }
+
+/* ---------- topbar ---------- */
+
+.topbar{
+  position:sticky; top:0; z-index:20;
+  background:var(--paper);
+  border-block-end:1px solid var(--rule);
+}
+.topbar-in{
+  display:flex; align-items:center; gap:clamp(1rem, 2vw, 2rem);
+  min-height:3.75rem;
+  padding-block:0.5rem;
+}
+.brand{
+  display:inline-flex; align-items:center; gap:0.5rem;
+  font-weight:800; font-size:var(--step-0);
+  letter-spacing:0.02em;
+  color:var(--ink); text-decoration:none;
+  white-space:nowrap;
+}
+.brand .glyph{ width:1.125rem; height:1.125rem; color:var(--accent); flex:none; }
+.brand small{
+  display:block;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.6875rem; font-weight:500; letter-spacing:0.16em;
+  text-transform:uppercase; color:var(--ink-3);
+}
+.topnav{ display:none; gap:1.5rem; margin-inline-start:auto; }
+.topnav a{
+  color:var(--ink-2); text-decoration:none;
+  font-size:var(--step--1); font-weight:600;
+  padding-block:0.5rem;
+  border-block-end:2px solid transparent;
+}
+.topnav a:hover{ color:var(--ink); border-block-end-color:var(--accent); }
+.topbar .btn{ margin-inline-start:auto; }
+@media (min-width:56rem){
+  .topnav{ display:flex; }
+  .topbar .btn{ margin-inline-start:0; }
+}
+
+/* ---------- hero ---------- */
+
+.hero{ padding-block:clamp(2.5rem, 1.2rem + 4vw, 5rem) clamp(2.5rem, 1.5rem + 3vw, 4.5rem); }
+.hero-grid{
+  display:grid; gap:clamp(2rem, 1rem + 3.5vw, 4rem);
+  align-items:start;
+}
+@media (min-width:62rem){
+  .hero-grid{ grid-template-columns:minmax(0,1.42fr) minmax(0,1fr); }
+}
+.hero-copy{ display:grid; gap:1.5rem; }
+.hero-copy .eyebrow{ margin-block-end:0.25rem; }
+
+.hero-strip{
+  display:flex; flex-wrap:wrap; gap:0.5rem 1.5rem;
+  margin-block-start:clamp(2rem, 1rem + 2.5vw, 3.25rem);
+  padding-block-start:1.25rem;
+  border-block-start:1px solid var(--rule);
+}
+.hero-strip li{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:var(--step--1); letter-spacing:0.1em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+.hero-strip b{ color:var(--ink); font-weight:600; }
+
+/* ---------- spec card ---------- */
+
+.card{
+  background:var(--paper-2);
+  border:1px solid var(--rule-2);
+  border-inline-start:3px solid var(--accent);
+  padding:clamp(1.25rem, 0.75rem + 1.5vw, 1.75rem);
+  display:grid; gap:1.25rem;
+}
+.card-head{ display:grid; gap:0.375rem; }
+.card-head .label{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:600; letter-spacing:0.18em; text-transform:uppercase;
+  color:var(--ink);
+}
+.card-head .note{ font-size:var(--step--1); color:var(--ink-3); line-height:1.45; }
+.spec{ display:grid; }
+.spec li{
+  display:grid; grid-template-columns:1.5rem 1fr; gap:0.5rem;
+  padding-block:0.5rem;
+  border-block-start:1px solid var(--rule);
+  font-size:var(--step--1);
+  line-height:1.45;
+  color:var(--ink-2);
+}
+.spec li::before{
+  content:"7";
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color:var(--accent);
+  font-size:0.75rem;
+  line-height:1.7;
+}
+.card-foot{ display:flex; flex-wrap:wrap; align-items:center; gap:0.75rem; justify-content:space-between; }
+.card-foot .note{ font-size:var(--step--1); color:var(--ink-3); }
+
+/* ---------- arena ---------- */
+
+.arena-bar{
+  display:flex; flex-wrap:wrap; gap:1rem; align-items:center; justify-content:space-between;
+  padding-block:0.75rem; margin-block-end:clamp(1.5rem, 1rem + 1.5vw, 2.25rem);
+  border-block:1px solid var(--rule);
+}
+.arena-bar p{ font-size:var(--step--1); color:var(--ink-3); }
+.arena-bar .btn-row{ gap:0.5rem; }
+
+.lanes{
+  display:grid; gap:clamp(1.75rem, 1rem + 2.5vw, 2.5rem);
+  grid-template-columns:minmax(0,1fr);
+}
+@media (min-width:46rem){
+  .lanes{ grid-template-columns:repeat(3, minmax(0,1fr)); }
+}
+
+.lane{ display:grid; gap:0.875rem; align-content:start; }
+.lane-head{ display:grid; gap:0.375rem; }
+.lane-idx{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:500; letter-spacing:0.18em;
+  color:var(--ink-3);
+}
+.lane-name{
+  display:flex; align-items:baseline; gap:0.5rem;
+  flex-wrap:wrap;
+}
+.lane-name h3{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:var(--step-1); font-weight:600; letter-spacing:-0.01em; }
+
+.plate{
+  position:relative;
+  aspect-ratio:9 / 16;
+  background:var(--plate);
+  border:1px solid var(--ink);
+  box-shadow:0 20px 44px -30px oklch(0.2 0.02 72 / 0.7);
+  overflow:hidden;
+}
+.plate iframe{
+  position:absolute; inset:0; width:100%; height:100%;
+  border:0; background:var(--plate);
+}
+.poster{
+  position:absolute; inset:0;
+  display:grid; place-content:center; justify-items:center; gap:0.875rem;
+  padding:1.5rem; text-align:center;
+  background:var(--plate);
+  color:oklch(0.78 0.02 265);
+}
+.poster .glyph{ width:2rem; height:2rem; color:oklch(0.55 0.04 265); }
+.poster p{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:var(--step--1); letter-spacing:0.1em; text-transform:uppercase;
+  max-width:22ch;
+}
+.poster .bar{
+  width:8rem; height:2px; background:oklch(0.32 0.02 265); overflow:hidden;
+}
+.poster .bar span{
+  display:block; width:38%; height:100%; background:var(--accent);
+}
+[data-state="loading"] .poster .bar span{ animation:slide 1.1s cubic-bezier(.65,0,.35,1) infinite; }
+@keyframes slide{ from{ transform:translateX(-110%); } to{ transform:translateX(300%); } }
+.poster [data-run]{ --btn-fg:oklch(0.93 0.01 265); --btn-bd:oklch(0.45 0.02 265); }
+.poster [data-run]:hover{ --btn-bd:oklch(0.8 0.02 265); }
+
+.chip{
+  display:inline-flex; align-items:center; gap:0.4375rem;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:500; letter-spacing:0.1em; text-transform:uppercase;
+  color:var(--ink-2);
+  white-space:nowrap;
+}
+.chip .dot{
+  width:0.4375rem; height:0.4375rem; border-radius:50%;
+  background:var(--ink-3); flex:none;
+}
+[data-state="loading"] .dot{ background:var(--accent); }
+[data-state="live"] .dot{ background:var(--accent); }
+[data-state="paused"] .dot{ background:var(--ink-3); }
+[data-state="blocked"] .dot{ background:var(--ink); }
+.lane-status[data-state="blocked"]{ color:var(--ink); }
+.lane-status[data-state="live"] .dot{ animation:pulse 2.4s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.35; } }
+
+.lane-facts{ display:grid; gap:0; }
+.lane-facts li{
+  display:grid; grid-template-columns:auto 1fr; gap:0.625rem;
+  padding-block:0.4375rem;
+  border-block-start:1px solid var(--rule);
+  font-size:var(--step--1); line-height:1.4;
+  color:var(--ink-2);
+}
+.lane-facts .k{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color:var(--ink-3); font-size:0.75rem;
+  letter-spacing:0.06em; text-transform:uppercase;
+  padding-block-start:0.125rem;
+}
+.lane-actions{ display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; }
+.lane-actions .link{
+  font-size:var(--step--1); font-weight:600; color:var(--ink-2);
+  text-decoration:underline; text-underline-offset:3px;
+  text-decoration-color:var(--rule-2);
+  padding:0.5rem 0.25rem; margin-inline-start:auto;
+}
+.lane-actions .link:hover{ color:var(--accent-dk); text-decoration-color:var(--accent); }
+
+.pick-badge{
+  display:none;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.6875rem; font-weight:600; letter-spacing:0.16em; text-transform:uppercase;
+  color:var(--paper); background:var(--accent);
+  padding:0.1875rem 0.5rem;
+}
+.lane[data-picked="true"] .pick-badge{ display:inline-block; }
+
+/* ---------- matrix ---------- */
+
+.matrix-scroll{
+  overflow-x:auto;
+  border:1px solid var(--rule-2);
+  background:var(--paper);
+}
+table.matrix{
+  border-collapse:collapse;
+  width:100%;
+  min-width:44rem;
+  font-size:var(--step--1);
+  text-align:start;
+}
+table.matrix caption{
+  caption-side:top; text-align:start;
+  padding:0.875rem 1rem;
+  color:var(--ink-3); font-size:var(--step--1);
+  border-block-end:1px solid var(--rule);
+}
+table.matrix th, table.matrix td{
+  padding:0.6875rem 1rem;
+  text-align:start;
+  vertical-align:top;
+  border-block-start:1px solid var(--rule);
+  overflow-wrap:break-word;
+}
+table.matrix thead th{
+  border-block-start:0;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:600; letter-spacing:0.12em; text-transform:uppercase;
+  color:var(--ink);
+  padding-block:0.875rem;
+}
+table.matrix thead th small{
+  display:block; margin-block-start:0.25rem;
+  font-size:0.6875rem; font-weight:400; letter-spacing:0.1em; color:var(--ink-3);
+}
+table.matrix th[scope="row"]{
+  position:sticky; inset-inline-start:0; z-index:1;
+  background:var(--paper-2);
+  border-inline-end:1px solid var(--rule-2);
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:500; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--ink-2); white-space:nowrap;
+  min-width:10rem;
+}
+table.matrix td{ color:var(--ink-2); min-width:13rem; }
+table.matrix td.is-outlier{
+  color:var(--ink);
+  box-shadow:inset 3px 0 0 var(--accent);
+}
+table.matrix td.is-outlier::before{
+  content:"▲";
+  color:var(--accent);
+  font-size:0.5625rem;
+  margin-inline-end:0.4375rem;
+  vertical-align:0.125em;
+}
+table.matrix tbody tr:hover th[scope="row"],
+table.matrix tbody tr:hover td{ background:var(--paper-3); }
+table.matrix tbody tr:hover td.is-outlier{ box-shadow:inset 3px 0 0 var(--accent-in); }
+
+.legend{
+  display:flex; flex-wrap:wrap; gap:0.5rem 1.25rem;
+  margin-block-start:1rem;
+  font-size:var(--step--1); color:var(--ink-3);
+}
+.legend span{ display:inline-flex; align-items:center; gap:0.4375rem; }
+.legend .mark{ color:var(--accent); font-size:0.5625rem; }
+
+/* ---------- verdict ---------- */
+
+.verdict-grid{
+  display:grid; gap:clamp(2rem, 1rem + 2.5vw, 3.5rem);
+}
+@media (min-width:58rem){
+  .verdict-grid{ grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); align-items:start; }
+}
+fieldset{ margin:0; padding:0; border:0; }
+fieldset > legend{
+  padding:0; margin-block-end:1rem;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:600; letter-spacing:0.18em; text-transform:uppercase;
+  color:var(--ink);
+}
+.picks{ display:grid; gap:0; border-block-start:1px solid var(--rule-2); }
+.pick{
+  display:grid; grid-template-columns:auto 1fr auto; gap:1rem; align-items:center;
+  padding:1rem 1.25rem;
+  border-block-end:1px solid var(--rule);
+  cursor:pointer;
+  transition:background-color .15s cubic-bezier(.2,0,0,1);
+}
+.pick:hover{ background:var(--paper-2); }
+.pick input{
+  appearance:none; -webkit-appearance:none;
+  width:1.125rem; height:1.125rem; margin:0;
+  border:1px solid var(--rule-2); border-radius:50%;
+  background:var(--paper);
+  display:grid; place-content:center;
+  cursor:pointer; flex:none;
+}
+.pick input::after{
+  content:""; width:0.5rem; height:0.5rem; border-radius:50%;
+  background:var(--accent); transform:scale(0);
+  transition:transform .15s cubic-bezier(.2,0,0,1);
+}
+.pick input:checked{ border-color:var(--accent-in); }
+.pick input:checked::after{ transform:scale(1); }
+.pick input:focus-visible{ outline:2px solid var(--focus); outline-offset:2px; }
+.pick:has(input:checked){ background:var(--paper-2); box-shadow:inset 3px 0 0 var(--accent); }
+.pick .pk-name{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:var(--step-0); font-weight:600; color:var(--ink);
+}
+.pick .pk-note{ display:block; font-size:var(--step--1); color:var(--ink-3); margin-block-start:0.1875rem; }
+.pick .pk-tag{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.6875rem; letter-spacing:0.14em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+.verdict-read{
+  padding:1.25rem;
+  background:var(--paper-2);
+  border:1px solid var(--rule-2);
+  display:grid; gap:0.5rem;
+}
+.verdict-read .k{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; letter-spacing:0.16em; text-transform:uppercase; color:var(--ink-3);
+}
+.verdict-read p{ font-size:var(--step-1); color:var(--ink); font-weight:600; }
+.verdict-read p.is-empty{ color:var(--ink-3); font-weight:400; font-size:var(--step-0); }
+
+/* ---------- footer ---------- */
+
+.foot{ padding-block:clamp(3rem, 2rem + 3vw, 5rem) clamp(2rem, 1.5rem + 2vw, 3rem); border-block-start:1px solid var(--rule); }
+.foot-grid{ display:grid; gap:clamp(2rem, 1rem + 2.5vw, 3.5rem); }
+@media (min-width:58rem){
+  .foot-grid{ grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); align-items:start; }
+}
+.rules{ display:grid; gap:0; margin-block-start:1.5rem; }
+.rules li{
+  display:grid; grid-template-columns:auto 1fr; gap:0.875rem;
+  padding-block:0.625rem;
+  border-block-start:1px solid var(--rule);
+  font-size:var(--step--1); line-height:1.45;
+}
+.rules .n{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; color:var(--ink-3); font-size:0.75rem; }
+.prov{ width:100%; border-collapse:collapse; font-size:var(--step--1); }
+.prov caption{
+  caption-side:top; text-align:start;
+  padding-block-end:0.75rem;
+  font-size:var(--step--1); color:var(--ink-3);
+}
+.prov th, .prov td{ padding:0.5rem 0.75rem 0.5rem 0; text-align:start; border-block-end:1px solid var(--rule); vertical-align:top; }
+.prov thead th{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:600; letter-spacing:0.12em; text-transform:uppercase; color:var(--ink);
+  white-space:nowrap;
+  border-block-end:1px solid var(--rule-2);
+}
+.prov tbody th{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:0.75rem; font-weight:500; letter-spacing:0.06em; color:var(--ink-2);
+  white-space:nowrap;
+}
+.prov td{ color:var(--ink-2); }
+.prov td.num{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.prov code{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:0.8125rem; color:var(--ink); }
+.colophon{
+  margin-block-start:clamp(2rem, 1rem + 2vw, 3rem);
+  padding-block-start:1.25rem;
+  border-block-start:1px solid var(--rule);
+  display:flex; flex-wrap:wrap; gap:0.75rem 2rem; justify-content:space-between;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:var(--step--1); color:var(--ink-3);
+}
+.colophon a{ color:var(--ink-2); text-decoration:underline; text-underline-offset:3px; text-decoration-color:var(--rule-2); }
+.colophon a:hover{ color:var(--accent-dk); text-decoration-color:var(--accent); }
+
+/* ---------- motion ---------- */
+
+[data-reveal]{ opacity:1; }
+
+@media (prefers-reduced-motion: no-preference){
+  html.js-motion [data-reveal]{
+    opacity:0;
+    transform:translateY(14px);
+    filter:blur(6px);
+  }
+  html.js-motion [data-reveal].is-in{
+    opacity:1;
+    transform:none;
+    filter:blur(0);
+    transition:opacity .52s cubic-bezier(.16,1,.3,1), transform .52s cubic-bezier(.16,1,.3,1), filter .52s cubic-bezier(.16,1,.3,1);
+  }
+  .hero-copy > *,
+  .hero .card{
+    animation:rise .62s cubic-bezier(.16,1,.3,1) both;
+  }
+  .hero-copy > *:nth-child(1){ animation-delay:.05s; }
+  .hero-copy > *:nth-child(2){ animation-delay:.13s; }
+  .hero-copy > *:nth-child(3){ animation-delay:.21s; }
+  .hero-copy > *:nth-child(4){ animation-delay:.29s; }
+  .hero .card{ animation-delay:.20s; }
+  .hero-strip{ animation:rise .62s .4s cubic-bezier(.16,1,.3,1) both; }
+  .plate iframe{ animation:fadeIn .5s cubic-bezier(.16,1,.3,1) both; }
+  .brand .glyph{ animation:spin 26s linear infinite; }
+}
+@keyframes rise{ from{ opacity:0; transform:translateY(18px); filter:blur(8px); } to{ opacity:1; transform:none; filter:blur(0); } }
+@keyframes fadeIn{ from{ opacity:0; } to{ opacity:1; } }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:0.01ms !important;
+  }
+  [data-state="loading"] .poster .bar span{ width:100%; }
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <symbol id="heptagon" viewBox="0 0 24 24">
+    <path d="M12 2 L19.8 5.8 L21.8 14.2 L16.3 21 L7.7 21 L2.2 14.2 L4.2 5.8 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </symbol>
+</svg>
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="#top">
+      <svg class="glyph" aria-hidden="true" focusable="false"><use href="#heptagon"></use></svg>
+      <span>Heptagon Trials<small>Evaluation nº 001</small></span>
+    </a>
+    <nav class="topnav" aria-label="Sections">
+      <a href="#specimens">Specimens</a>
+      <a href="#matrix">Matrix</a>
+      <a href="#verdict">Verdict</a>
+      <a href="#method">Method</a>
+    </nav>
+    <button type="button" class="btn btn-solid" data-run-all aria-pressed="false">Run all</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero" id="top" aria-labelledby="hero-title">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">One brief · Three models</p>
+          <h1 id="hero-title">One brief. Three models. Two hundred balls.</h1>
+          <p class="lead">Each model was handed the same prompt and no follow-up questions. Each returned a single self-contained file: two hundred numbered balls falling, colliding and settling inside a rotating heptagon, running on live rigid-body physics. All three are below, unedited.</p>
+          <div class="btn-row">
+            <a class="btn btn-solid" href="#specimens" data-run-all-link>Run the specimens</a>
+            <a class="btn" href="#matrix">Compare the implementations</a>
+          </div>
+        </div>
+
+        <div class="card" aria-labelledby="spec-title">
+          <div class="card-head">
+            <p class="label" id="spec-title">The shared spec</p>
+            <p class="note">Reconstructed from the three submissions. The original prompt was not kept, so this is what the code agrees on, not a quotation.</p>
+          </div>
+          <ul class="spec">
+            <li>200 labelled balls</li>
+            <li>one rotating regular heptagon</li>
+            <li>1080 × 1920, portrait, scaled to fit</li>
+            <li>a single HTML file, p5.js from a CDN</li>
+            <li>live simulation, no pre-rendered animation</li>
+            <li>six timed acts, ending in a settle</li>
+            <li>audio stays silent until clicked</li>
+            <li>R restarts</li>
+          </ul>
+          <div class="card-foot">
+            <span class="note">Nothing below was touched.</span>
+            <button type="button" class="btn btn-sm" data-copy-spec>Copy spec</button>
+          </div>
+        </div>
+      </div>
+
+      <ul class="hero-strip">
+        <li><b>3</b> submissions</li>
+        <li><b>6</b> acts each</li>
+        <li><b>200</b> balls</li>
+        <li><b>0</b> edits made</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="specimens" aria-labelledby="specimens-title">
+    <div class="wrap">
+      <div class="section-head" data-reveal>
+        <p class="eyebrow">Specimens</p>
+        <h2 id="specimens-title">Three answers to the same question, running side by side</h2>
+        <p class="prose">Each frame is the model's own file, loaded straight from this repository. They share a brief and almost nothing else: no two use the same solver, the same units, or the same way of telling you what happened.</p>
+      </div>
+
+      <div class="arena-bar">
+        <p data-arena-note>Frames start when they scroll into view.</p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-sm" data-run-all aria-pressed="false">Run all</button>
+          <button type="button" class="btn btn-sm" data-pause-all>Pause all</button>
+        </div>
+      </div>
+
+      <div class="lanes">
+
+        <article class="lane" data-lane data-src="gpt-luna-6/index.html" data-name="gpt-luna-6" data-picked="false">
+          <header class="lane-head">
+            <span class="lane-idx">01 / 03</span>
+            <div class="lane-name">
+              <h3 translate="no">gpt-luna-6</h3>
+              <span class="pick-badge">Your pick</span>
+            </div>
+            <p class="chip lane-status" data-status data-state="idle">
+              <span class="dot" aria-hidden="true"></span>
+              <span data-status-text>Idle</span>
+            </p>
+          </header>
+
+          <div class="plate" data-plate>
+            <div class="poster" data-poster>
+              <svg class="glyph" aria-hidden="true" focusable="false"><use href="#heptagon"></use></svg>
+              <p data-poster-note>Not running</p>
+              <div class="bar" aria-hidden="true"><span></span></div>
+              <button type="button" class="btn btn-sm" data-run>Run this one</button>
+            </div>
+          </div>
+
+          <ul class="lane-facts">
+            <li><span class="k">solver</span><span>All pairs, three passes, no broadphase</span></li>
+            <li><span class="k">step</span><span>120 Hz fixed</span></li>
+            <li><span class="k">trails</span><span>Five-point tail behind each ball</span></li>
+            <li><span class="k">audio</span><span>WebAudio, five-note pentatonic set</span></li>
+            <li><span class="k">label</span><span>“Simulation Lab / Luna 6”</span></li>
+          </ul>
+
+          <div class="lane-actions">
+            <button type="button" class="btn btn-sm" data-toggle>Pause</button>
+            <a class="link" href="gpt-luna-6/index.html" target="_blank" rel="noopener">Open standalone<span class="sr-only"> (opens gpt-luna-6 in a new tab)</span></a>
+          </div>
+        </article>
+
+        <article class="lane" data-lane data-src="grok-4.7/index.html" data-name="grok-4.7" data-picked="false">
+          <header class="lane-head">
+            <span class="lane-idx">02 / 03</span>
+            <div class="lane-name">
+              <h3 translate="no">grok-4.7</h3>
+              <span class="pick-badge">Your pick</span>
+            </div>
+            <p class="chip lane-status" data-status data-state="idle">
+              <span class="dot" aria-hidden="true"></span>
+              <span data-status-text>Idle</span>
+            </p>
+          </header>
+
+          <div class="plate" data-plate>
+            <div class="poster" data-poster>
+              <svg class="glyph" aria-hidden="true" focusable="false"><use href="#heptagon"></use></svg>
+              <p data-poster-note>Not running</p>
+              <div class="bar" aria-hidden="true"><span></span></div>
+              <button type="button" class="btn btn-sm" data-run>Run this one</button>
+            </div>
+          </div>
+
+          <ul class="lane-facts">
+            <li><span class="k">solver</span><span>Hash grid, 8 substeps × 5 iterations</span></li>
+            <li><span class="k">step</span><span>Eight substeps per frame</span></li>
+            <li><span class="k">trails</span><span>Seven-point tail, six ghost heptagons</span></li>
+            <li><span class="k">audio</span><span>31-semitone map, eight voices at once</span></li>
+            <li><span class="k">label</span><span>“Grok 4.7”</span></li>
+          </ul>
+
+          <div class="lane-actions">
+            <button type="button" class="btn btn-sm" data-toggle>Pause</button>
+            <a class="link" href="grok-4.7/index.html" target="_blank" rel="noopener">Open standalone<span class="sr-only"> (opens grok-4.7 in a new tab)</span></a>
+          </div>
+        </article>
+
+        <article class="lane" data-lane data-src="sonnet-5.5/vertical.html" data-name="sonnet-5.5" data-picked="false">
+          <header class="lane-head">
+            <span class="lane-idx">03 / 03</span>
+            <div class="lane-name">
+              <h3 translate="no">sonnet-5.5</h3>
+              <span class="pick-badge">Your pick</span>
+            </div>
+            <p class="chip lane-status" data-status data-state="idle">
+              <span class="dot" aria-hidden="true"></span>
+              <span data-status-text>Idle</span>
+            </p>
+          </header>
+
+          <div class="plate" data-plate>
+            <div class="poster" data-poster>
+              <svg class="glyph" aria-hidden="true" focusable="false"><use href="#heptagon"></use></svg>
+              <p data-poster-note>Not running</p>
+              <div class="bar" aria-hidden="true"><span></span></div>
+              <button type="button" class="btn btn-sm" data-run>Run this one</button>
+            </div>
+          </div>
+
+          <ul class="lane-facts">
+            <li><span class="k">solver</span><span>Hash grid, 480 Hz, ten passes</span></li>
+            <li><span class="k">units</span><span>Normalised; heptagon radius is 1</span></li>
+            <li><span class="k">trails</span><span>Full-frame motion blur</span></li>
+            <li><span class="k">audio</span><span>Loudest five impacts per frame</span></li>
+            <li><span class="k">label</span><span>“Claude Sonnet 5.5”</span></li>
+          </ul>
+
+          <div class="lane-actions">
+            <button type="button" class="btn btn-sm" data-toggle>Pause</button>
+            <a class="link" href="sonnet-5.5/vertical.html" target="_blank" rel="noopener">Open standalone<span class="sr-only"> (opens sonnet-5.5 in a new tab)</span></a>
+          </div>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <section id="matrix" aria-labelledby="matrix-title">
+    <div class="wrap">
+      <div class="section-head" data-reveal>
+        <p class="eyebrow">Matrix</p>
+        <h2 id="matrix-title">Where the three implementations diverge</h2>
+        <p class="prose">Every cell was read out of the source rather than judged from the output. The marked cells are the places where a model took a route its rivals did not.</p>
+      </div>
+
+      <div class="matrix-scroll" data-reveal tabindex="0" role="region" aria-labelledby="matrix-title">
+        <table class="matrix">
+          <caption>Fourteen points of comparison across the three submissions. Scroll sideways to see every column.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Dimension</th>
+              <th scope="col">01 · gpt-luna-6<small>10.7 KB</small></th>
+              <th scope="col">02 · grok-4.7<small>27.0 KB</small></th>
+              <th scope="col">03 · sonnet-5.5<small>25.9 KB</small></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Fixed step</th>
+              <td class="is-outlier">1/120 s, accumulator</td>
+              <td>8 substeps per frame</td>
+              <td class="is-outlier">1/480 s, accumulator</td>
+            </tr>
+            <tr>
+              <th scope="row">Broadphase</th>
+              <td class="is-outlier">None. Every pair, every step</td>
+              <td>Hash grid, cell = 2r</td>
+              <td>Hash grid, cell = 3r</td>
+            </tr>
+            <tr>
+              <th scope="row">Solver</th>
+              <td>3 passes, custom impulse</td>
+              <td>5 iterations, sequential impulse</td>
+              <td>10 passes, sequential impulse</td>
+            </tr>
+            <tr>
+              <th scope="row">Rotation in the solver</th>
+              <td>Spin only, no inertia</td>
+              <td>Angular velocity and inertia</td>
+              <td>Angular velocity and inertia</td>
+            </tr>
+            <tr>
+              <th scope="row">Restitution</th>
+              <td class="is-outlier">0.76 wall, 0.84 ball</td>
+              <td>0.46 falling to 0.03 by act</td>
+              <td>0.5 wall, 0.55 ball, tripled in zero-G</td>
+            </tr>
+            <tr>
+              <th scope="row">World units</th>
+              <td>Pixels. Gravity 0.14 px per step²</td>
+              <td>Pixels per second. Gravity 1180 px/s²</td>
+              <td class="is-outlier">Normalised. Radius 1, gravity 3.2</td>
+            </tr>
+            <tr>
+              <th scope="row">Spawn</th>
+              <td>Grid, radii 18 to 19.8 px</td>
+              <td class="is-outlier">Hex lattice, then golden-angle fill</td>
+              <td>Hex lattice, topmost first</td>
+            </tr>
+            <tr>
+              <th scope="row">Container motion</th>
+              <td>Spin plus radius pulse</td>
+              <td>Spin plus a crush scale</td>
+              <td class="is-outlier">Spin, scale, breathing walls, gravity direction</td>
+            </tr>
+            <tr>
+              <th scope="row">Act transitions</th>
+              <td>Hard cuts on a fixed timeline</td>
+              <td>Parameters crossfade over 0.85 s</td>
+              <td>Eased steering, tint blend, ring pulses</td>
+            </tr>
+            <tr>
+              <th scope="row">Trails</th>
+              <td>Five-point tail per ball</td>
+              <td>Seven-point tail, six ghost heptagons</td>
+              <td class="is-outlier">Destination-out motion blur</td>
+            </tr>
+            <tr>
+              <th scope="row">Audio mapping</th>
+              <td>Five-note set, one ping per impact</td>
+              <td class="is-outlier">31-semitone map, eight voices, 48 ms cooldown</td>
+              <td>15-step map, loudest five per frame</td>
+            </tr>
+            <tr>
+              <th scope="row">Numbers on balls</th>
+              <td>Yes</td>
+              <td>Yes</td>
+              <td>Yes, drawn outside the blur layer</td>
+            </tr>
+            <tr>
+              <th scope="row">HUD reads out</th>
+              <td>Collisions, energy graph, clock</td>
+              <td>Collisions, energy sparkline, clock</td>
+              <td>Collisions, energy sparkline, clock, act progress</td>
+            </tr>
+            <tr>
+              <th scope="row">p5 build</th>
+              <td>1.9.4</td>
+              <td>1.11.0</td>
+              <td>1.11.3</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="legend">
+        <span><span class="mark" aria-hidden="true">▲</span> A route its rivals did not take</span>
+        <span>Source sizes measured from the files in this repository</span>
+      </p>
+    </div>
+  </section>
+
+  <section id="verdict" aria-labelledby="verdict-title">
+    <div class="wrap">
+      <div class="section-head" data-reveal>
+        <p class="eyebrow">Verdict</p>
+        <h2 id="verdict-title">Pick the one you would keep</h2>
+        <p class="prose">There is no score and no judge. Watch the three, choose the implementation you would rather maintain, and this page will remember the choice in your browser.</p>
+      </div>
+
+      <div class="verdict-grid" data-reveal>
+        <form>
+          <fieldset>
+            <legend>Your specimen</legend>
+            <div class="picks">
+              <label class="pick">
+                <input type="radio" name="specimen" value="gpt-luna-6">
+                <span class="pk-text">
+                  <span class="pk-name" translate="no">gpt-luna-6</span>
+                  <span class="pk-note">Tight and handmade. One file, 58 lines, brute force.</span>
+                </span>
+                <span class="pk-tag">01</span>
+              </label>
+              <label class="pick">
+                <input type="radio" name="specimen" value="grok-4.7">
+                <span class="pk-text">
+                  <span class="pk-name" translate="no">grok-4.7</span>
+                  <span class="pk-note">The engineer's one. Grid, friction, rotation, restrained easing.</span>
+                </span>
+                <span class="pk-tag">02</span>
+              </label>
+              <label class="pick">
+                <input type="radio" name="specimen" value="sonnet-5.5">
+                <span class="pk-text">
+                  <span class="pk-name" translate="no">sonnet-5.5</span>
+                  <span class="pk-note">The showiest. Motion blur, sound design, a director steering every act.</span>
+                </span>
+                <span class="pk-tag">03</span>
+              </label>
+              <label class="pick">
+                <input type="radio" name="specimen" value="none">
+                <span class="pk-text">
+                  <span class="pk-name">No pick</span>
+                  <span class="pk-note">Clear the badge from every specimen.</span>
+                </span>
+                <span class="pk-tag">—</span>
+              </label>
+            </div>
+          </fieldset>
+        </form>
+
+        <div class="verdict-read">
+          <p class="k">Recorded</p>
+          <p data-pick-readout class="is-empty">Nothing chosen yet.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="method" aria-labelledby="method-title">
+    <div class="wrap">
+      <div class="footer-grid foot-grid">
+        <div>
+          <p class="eyebrow">Method</p>
+          <h2 id="method-title">How the comparison was run</h2>
+          <ul class="rules">
+            <li><span class="n">01</span><span>One prompt, issued once. No clarification round, no revisions, no second attempt.</span></li>
+            <li><span class="n">02</span><span>Each model produced a single file with no build step and no companion assets.</span></li>
+            <li><span class="n">03</span><span>The files above are the originals. Nothing was fixed, tuned or reformatted to flatter them.</span></li>
+            <li><span class="n">04</span><span>No ranking is implied by the order. 01, 02 and 03 are just the order they were collected.</span></li>
+            <li><span class="n">05</span><span>The matrix reports what the source does, not what it looks like.</span></li>
+          </ul>
+        </div>
+
+        <div>
+          <h2 class="sr-only">Provenance</h2>
+          <table class="prov">
+            <caption>Files shown on this page, measured from disk.</caption>
+            <thead>
+              <tr><th scope="col">Specimen</th><th scope="col">File</th><th scope="col">Bytes</th><th scope="col">Lines</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">gpt-luna-6</th><td><code>gpt-luna-6/index.html</code></td><td class="num">10,703</td><td class="num">58</td></tr>
+              <tr><th scope="row">grok-4.7</th><td><code>grok-4.7/index.html</code></td><td class="num">27,006</td><td class="num">1,076</td></tr>
+              <tr><th scope="row">sonnet-5.5</th><td><code>sonnet-5.5/vertical.html</code></td><td class="num">25,881</td><td class="num">810</td></tr>
+            </tbody>
+          </table>
+          <ul class="rules">
+            <li><span class="n">↑</span><span>sonnet-5.5 also shipped <code>index.html</code> and <code>cold-run/index.html</code>. <code>vertical.html</code> is shown because it is the one that matches the 1080 × 1920 frame the other two use.</span></li>
+            <li><span class="n">↑</span><span>Serve this page over HTTP. Browsers block local files from loading other local files inside a frame, so the specimens stay dark on <code>file://</code>.</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="colophon">
+        <span>Heptagon Trials · Evaluation nº 001</span>
+        <span>Three submissions, unmodified · <a href="https://github.com/ObaidNadeem/comparisions" rel="noopener">Repository</a></span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<p class="sr-only" role="status" aria-live="polite" id="live"></p>
+
+<script>
+(function () {
+  'use strict';
+
+  var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var live = document.getElementById('live');
+
+  function announce(message) {
+    if (live) live.textContent = message;
+  }
+
+  if (!motionQuery.matches) document.documentElement.classList.add('js-motion');
+
+  /* Reveal on scroll */
+  var revealables = [].slice.call(document.querySelectorAll('[data-reveal]'));
+  if ('IntersectionObserver' in window && !motionQuery.matches) {
+    var revealer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-in');
+        revealer.unobserve(entry.target);
+      });
+    }, { rootMargin: '0px 0px -10% 0px', threshold: 0.12 });
+    revealables.forEach(function (el) { revealer.observe(el); });
+  } else {
+    revealables.forEach(function (el) { el.classList.add('is-in'); });
+  }
+
+  /* Specimen controller */
+  function createLane(root) {
+    var src = root.getAttribute('data-src');
+    var name = root.getAttribute('data-name');
+    var plate = root.querySelector('[data-plate]');
+    var poster = root.querySelector('[data-poster]');
+    var posterNote = root.querySelector('[data-poster-note]');
+    var runBtn = root.querySelector('[data-run]');
+    var toggleBtn = root.querySelector('[data-toggle]');
+    var status = root.querySelector('[data-status]');
+    var statusText = root.querySelector('[data-status-text]');
+
+    var frame = null;
+    var controllable = false;
+    var loadTimer = 0;
+    var state = 'idle';
+
+    function setState(next, label) {
+      state = next;
+      status.setAttribute('data-state', next);
+      statusText.textContent = label;
+      root.setAttribute('data-state', next);
+
+      if (next === 'live') {
+        poster.hidden = true;
+        posterNote.textContent = 'Running';
+        announce(name + ' is running.');
+      } else {
+        poster.hidden = false;
+      }
+      if (next === 'loading') posterNote.textContent = 'Starting';
+      if (next === 'paused') posterNote.textContent = 'Paused';
+      if (next === 'blocked') posterNote.textContent = 'Frame blocked';
+
+      runBtn.hidden = (next === 'loading' || next === 'live' || next === 'paused');
+      if (next === 'blocked') runBtn.hidden = false;
+
+      toggleBtn.disabled = (next === 'idle' || next === 'loading' || next === 'blocked');
+      if (next === 'blocked') toggleBtn.disabled = false;
+      if (next === 'paused') toggleBtn.textContent = 'Resume';
+      else if (next === 'live' && !controllable) toggleBtn.textContent = 'Restart';
+      else toggleBtn.textContent = 'Pause';
+
+      runBtn.textContent = next === 'blocked' ? 'Open standalone' : 'Run this one';
+    }
+
+    function canReach() {
+      try {
+        var win = frame && frame.contentWindow;
+        return !!(win && typeof win.noLoop === 'function' && typeof win.loop === 'function');
+      } catch (err) {
+        return false;
+      }
+    }
+
+    /* p5 defines loop() and noLoop() in its own setup, which can land after the
+       frame's load event, so we keep checking for a moment before giving up. */
+    function probe(attempt) {
+      if (canReach()) {
+        controllable = true;
+        if (state === 'live') toggleBtn.textContent = 'Pause';
+        return;
+      }
+      if (attempt < 12) window.setTimeout(function () { probe(attempt + 1); }, 200);
+    }
+
+    function mount() {
+      if (frame) return;
+      posterNote.textContent = 'Starting';
+      setState('loading', 'Starting');
+
+      var el = document.createElement('iframe');
+      el.src = src;
+      el.title = name + ' simulation, 1080 by 1920';
+      el.setAttribute('tabindex', '-1');
+      el.setAttribute('scrolling', 'no');
+      el.setAttribute('allow', 'autoplay');
+      frame = el;
+      plate.appendChild(el);
+
+      el.addEventListener('load', function () {
+        window.clearTimeout(loadTimer);
+        controllable = canReach();
+        setState('live', 'Running');
+        probe(0);
+      });
+
+      loadTimer = window.setTimeout(function () {
+        if (state !== 'live') {
+          setState('blocked', 'Blocked');
+          posterNote.textContent = 'Blocked by the browser';
+          announce(name + ' could not load inside a frame. Open it standalone.');
+        }
+      }, 15000);
+    }
+
+    function run() {
+      if (!frame) { mount(); return; }
+      if (controllable) {
+        try { frame.contentWindow.loop(); } catch (err) { controllable = false; }
+      }
+      setState('live', 'Running');
+    }
+
+    function pause() {
+      if (!frame) return;
+      if (!controllable) controllable = canReach();
+      if (controllable) {
+        try { frame.contentWindow.noLoop(); setState('paused', 'Paused'); return; }
+        catch (err) { controllable = false; }
+      }
+      plate.removeChild(frame);
+      frame = null;
+      setState('idle', 'Idle');
+    }
+
+    function restart() {
+      if (frame) { plate.removeChild(frame); frame = null; }
+      mount();
+    }
+
+    runBtn.addEventListener('click', function () {
+      if (state === 'blocked') { window.open(src, '_blank', 'noopener'); return; }
+      mount();
+    });
+
+    toggleBtn.addEventListener('click', function () {
+      if (state === 'paused') { run(); return; }
+      if (state === 'live') {
+        if (controllable || canReach()) { controllable = true; pause(); }
+        else restart();
+      }
+    });
+
+    setState('idle', 'Idle');
+
+    return {
+      root: root,
+      name: name,
+      run: run,
+      pause: function () { if (state === 'live') pause(); },
+      isIdle: function () { return state === 'idle' || state === 'paused' || state === 'blocked'; },
+      mount: mount
+    };
+  }
+
+  var lanes = [].slice.call(document.querySelectorAll('[data-lane]')).map(createLane);
+
+  /* Start a lane when it scrolls into view, unless the visitor prefers less motion. */
+  if ('IntersectionObserver' in window && !motionQuery.matches) {
+    var starter = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        var lane = lanes.filter(function (l) { return l.root === entry.target; })[0];
+        if (lane && lane.isIdle()) lane.mount();
+        starter.unobserve(entry.target);
+      });
+    }, { rootMargin: '0px 0px -18% 0px', threshold: 0.25 });
+    lanes.forEach(function (lane) { starter.observe(lane.root); });
+  } else {
+    document.querySelector('[data-arena-note]').textContent = 'Reduced motion is on, so nothing starts by itself.';
+  }
+
+  /* Run all / pause all */
+  var runAllButtons = [].slice.call(document.querySelectorAll('[data-run-all]'));
+  var pauseAllButton = document.querySelector('[data-pause-all]');
+
+  function setRunAllPressed(pressed) {
+    runAllButtons.forEach(function (btn) {
+      btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+      btn.textContent = pressed ? 'All running' : 'Run all';
+    });
+  }
+
+  runAllButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      lanes.forEach(function (lane) { lane.run(); });
+      setRunAllPressed(true);
+      announce('All three specimens are running.');
+    });
+  });
+
+  if (pauseAllButton) {
+    pauseAllButton.addEventListener('click', function () {
+      lanes.forEach(function (lane) { lane.pause(); });
+      setRunAllPressed(false);
+      announce('All specimens paused.');
+    });
+  }
+
+  var runLink = document.querySelector('[data-run-all-link]');
+  if (runLink) {
+    runLink.addEventListener('click', function () {
+      window.setTimeout(function () {
+        lanes.forEach(function (lane) { lane.run(); });
+        setRunAllPressed(true);
+      }, 320);
+    });
+  }
+
+  /* Copy the reconstructed spec */
+  var copyBtn = document.querySelector('[data-copy-spec]');
+  if (copyBtn) {
+    var specText = [].slice.call(document.querySelectorAll('.spec li'))
+      .map(function (li) { return '- ' + li.textContent.trim(); })
+      .join('\n');
+
+    copyBtn.addEventListener('click', function () {
+      var done = function (ok) {
+        copyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+        announce(ok ? 'Spec copied to the clipboard.' : 'Copying failed in this browser.');
+        window.setTimeout(function () { copyBtn.textContent = 'Copy spec'; }, 2200);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(specText).then(function () { done(true); }, function () { done(false); });
+        return;
+      }
+      done(false);
+    });
+  }
+
+  /* Specimen pick */
+  var STORE = 'heptagon-trials-pick';
+  var readout = document.querySelector('[data-pick-readout]');
+  var radios = [].slice.call(document.querySelectorAll('input[name="specimen"]'));
+
+  function applyPick(value) {
+    var chosen = null;
+    lanes.forEach(function (lane) {
+      var match = lane.name === value;
+      lane.root.setAttribute('data-picked', match ? 'true' : 'false');
+      if (match) chosen = lane.name;
+    });
+
+    if (chosen) {
+      readout.textContent = 'Your pick: ' + chosen;
+      readout.classList.remove('is-empty');
+      announce('Recorded ' + chosen + ' as your pick.');
+    } else {
+      readout.textContent = 'Nothing chosen yet.';
+      readout.classList.add('is-empty');
+      announce('Pick cleared.');
+    }
+  }
+
+  var stored = null;
+  try { stored = window.localStorage.getItem(STORE); } catch (err) { stored = null; }
+
+  if (stored) {
+    var match = radios.filter(function (r) { return r.value === stored; })[0];
+    if (match) { match.checked = true; applyPick(stored); }
+  }
+
+  radios.forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      var value = radio.value === 'none' ? null : radio.value;
+      try {
+        if (value) window.localStorage.setItem(STORE, value);
+        else window.localStorage.removeItem(STORE);
+      } catch (err) { /* storage unavailable */ }
+      applyPick(value);
+    });
+  });
+})();
+</script>
+
+</body>
+</html>
