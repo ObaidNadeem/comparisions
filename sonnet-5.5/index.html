@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>200 Balls in a Heptagon</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #090b12; overflow: hidden; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .08em;
+    color: rgba(190, 200, 255, .45); pointer-events: none;
+    animation: fade 1s 5s forwards;
+  }
+  @keyframes fade { to { opacity: 0; } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+</head>
+<body>
+<div class="hint">R — reset</div>
+<script>
+// World units: the heptagon's circumradius is 1, +y points down (screen space).
+const BALL_COUNT = 200
+const SIDES = 7
+const APOTHEM = Math.cos(Math.PI / SIDES)
+const BALL_RADIUS = 0.045
+const GRAVITY = 3.2
+const SPIN_RATE = 0.35          // container rotation, rad/s
+const STEP = 1 / 480            // fixed physics step, s
+const MAX_FRAME = 1 / 20        // clamp long frames so the sim never spirals
+const SOLVER_PASSES = 10        // stacks ~10 balls tall need many passes to carry their load
+const WALL_BOUNCE = 0.5
+const BALL_BOUNCE = 0.55
+const REST_SPEED = 0.1          // impacts slower than this don't bounce, so piles settle
+const WALL_FRICTION = 0.4
+const BALL_FRICTION = 0.25
+const LINEAR_DRAG = 0.05
+const SPIN_DRAG = 1.2
+const BG = [9, 11, 18]
+const TRAIL_ALPHA = 95          // 0-255, lower = longer motion blur
+
+let world
+let trail
+let clock = 0
+
+// ---------- setup ----------
+
+const clamp = (value, low, high) => Math.max(low, Math.min(high, value))
+
+function shuffle(items) {
+  const result = items.slice()
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const held = result[i]
+    result[i] = result[j]
+    result[j] = held
+  }
+  return result
+}
+
+function wallAngle(rotation, index) {
+  return rotation + Math.PI / 2 + (index * 2 * Math.PI) / SIDES
+}
+
+function isInsideMargin(x, y, margin) {
+  for (let i = 0; i < SIDES; i++) {
+    const a = wallAngle(0, i)
+    if (APOTHEM - (x * Math.cos(a) + y * Math.sin(a)) < margin) return false
+  }
+  return true
+}
+
+// Hex lattice inside the heptagon, topmost points first, so the balls start as a block and drop.
+function latticePoints() {
+  const spacing = BALL_RADIUS * 2.3
+  const rowHeight = spacing * 0.866
+  const points = []
+  for (let row = 0; row * rowHeight < 2; row++) {
+    const y = -1 + row * rowHeight
+    const shift = row % 2 ? spacing / 2 : 0
+    for (let x = -1 + shift; x < 1; x += spacing) {
+      if (!isInsideMargin(x, y, BALL_RADIUS * 1.3)) continue
+      points.push({ x, y })
+    }
+  }
+  return points.sort((a, b) => a.y - b.y)
+}
+
+function createWorld() {
+  const ids = shuffle(Array.from({ length: BALL_COUNT }, (_, i) => i + 1))
+  const jitter = () => (Math.random() - 0.5) * BALL_RADIUS * 0.2
+  const balls = latticePoints().slice(0, BALL_COUNT).map((point, i) => ({
+    id: ids[i],
+    x: point.x + jitter(),
+    y: point.y + jitter(),
+    vx: (Math.random() - 0.5) * 0.3,
+    vy: Math.random() * 0.2,
+    angle: Math.random() * Math.PI * 2,
+    spin: 0,
+    hue: ((ids[i] - 1) / BALL_COUNT) * 330,
+  }))
+  return { angle: 0, balls }
+}
+
+// ---------- physics ----------
+// The solver mutates balls in place: 200 balls x 480 steps/s makes copying wasteful.
+
+function getWalls(rotation) {
+  return Array.from({ length: SIDES }, (_, i) => {
+    const a = wallAngle(rotation, i)
+    return { ux: Math.cos(a), uy: Math.sin(a) } // outward normal
+  })
+}
+
+// Normal + Coulomb friction impulse for one contact, per ball.
+// (nx, ny) is the contact normal, (rvx, rvy) the relative velocity of the ball
+// being pushed, `share` how much of the closing speed it absorbs (1 wall, 1/2 pair)
+// and `tangentMass` the contact's slip response (3 for a wall, 6 for a pair of solid discs).
+function contactImpulse(contact, bounce, friction, share, tangentMass) {
+  const { rvx, rvy, nx, ny, spinSum } = contact
+  const vn = rvx * nx + rvy * ny
+  if (vn >= 0) return null
+  const restitution = -vn < REST_SPEED ? 0 : bounce
+  const jn = -(1 + restitution) * vn * share
+  const tx = -ny
+  const ty = nx
+  const slip = rvx * tx + rvy * ty - spinSum * BALL_RADIUS
+  const jt = clamp(-slip / tangentMass, -friction * jn, friction * jn)
+  return { jn, jt, tx, ty }
+}
+
+function collideWall(ball, wall) {
+  const { ux, uy } = wall
+  const dist = APOTHEM - (ball.x * ux + ball.y * uy)
+  if (dist >= BALL_RADIUS) return
+  ball.x -= ux * (BALL_RADIUS - dist)
+  ball.y -= uy * (BALL_RADIUS - dist)
+
+  // The wall moves: its surface velocity at the contact point is SPIN_RATE x contact.
+  const cx = ball.x + ux * BALL_RADIUS
+  const cy = ball.y + uy * BALL_RADIUS
+  const impulse = contactImpulse(
+    { rvx: ball.vx + SPIN_RATE * cy, rvy: ball.vy - SPIN_RATE * cx, nx: -ux, ny: -uy, spinSum: ball.spin },
+    WALL_BOUNCE,
+    WALL_FRICTION,
+    1,
+    3,
+  )
+  if (!impulse) return
+  ball.vx += -ux * impulse.jn + impulse.tx * impulse.jt
+  ball.vy += -uy * impulse.jn + impulse.ty * impulse.jt
+  ball.spin -= (2 * impulse.jt) / BALL_RADIUS
+}
+
+function collidePair(a, b) {
+  const minDist = BALL_RADIUS * 2
+  const dx = b.x - a.x
+  if (dx > minDist || dx < -minDist) return
+  const dy = b.y - a.y
+  const distSq = dx * dx + dy * dy
+  if (distSq >= minDist * minDist) return
+
+  const dist = Math.sqrt(distSq) || 1e-6
+  const nx = dx / dist
+  const ny = dy / dist
+  const push = (minDist - dist) / 2
+  a.x -= nx * push
+  a.y -= ny * push
+  b.x += nx * push
+  b.y += ny * push
+
+  const impulse = contactImpulse(
+    { rvx: b.vx - a.vx, rvy: b.vy - a.vy, nx, ny, spinSum: a.spin + b.spin },
+    BALL_BOUNCE,
+    BALL_FRICTION,
+    0.5,
+    6,
+  )
+  if (!impulse) return
+  const jx = nx * impulse.jn + impulse.tx * impulse.jt
+  const jy = ny * impulse.jn + impulse.ty * impulse.jt
+  a.vx -= jx
+  a.vy -= jy
+  b.vx += jx
+  b.vy += jy
+  a.spin -= (2 * impulse.jt) / BALL_RADIUS
+  b.spin -= (2 * impulse.jt) / BALL_RADIUS
+}
+
+function integrate(balls, dt) {
+  const drag = 1 - LINEAR_DRAG * dt
+  const spinDrag = 1 - SPIN_DRAG * dt
+  for (const ball of balls) {
+    ball.vy += GRAVITY * dt
+    ball.vx *= drag
+    ball.vy *= drag
+    ball.spin *= spinDrag
+    ball.x += ball.vx * dt
+    ball.y += ball.vy * dt
+    ball.angle += ball.spin * dt
+  }
+}
+
+// Candidate contacts from a uniform grid, built once per step and reused across solver passes.
+function findPairs(balls) {
+  const cell = BALL_RADIUS * 3
+  const grid = new Map()
+  for (const ball of balls) {
+    const key = Math.floor(ball.x / cell) * 4096 + Math.floor(ball.y / cell)
+    const bucket = grid.get(key)
+    if (bucket) bucket.push(ball)
+    else grid.set(key, [ball])
+  }
+  const pairs = []
+  for (const ball of balls) {
+    const cx = Math.floor(ball.x / cell)
+    const cy = Math.floor(ball.y / cell)
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        for (const other of grid.get(gx * 4096 + gy) || []) {
+          if (other.id > ball.id) pairs.push([ball, other])
+        }
+      }
+    }
+  }
+  return pairs
+}
+
+function stepWorld(state, dt) {
+  state.angle += SPIN_RATE * dt
+  const walls = getWalls(state.angle)
+  integrate(state.balls, dt)
+  const pairs = findPairs(state.balls)
+  for (let pass = 0; pass < SOLVER_PASSES; pass++) {
+    for (const [a, b] of pairs) collidePair(a, b)
+    for (const ball of state.balls) {
+      for (const wall of walls) collideWall(ball, wall)
+    }
+  }
+}
+
+function advance(state, frameSeconds) {
+  clock += Math.min(frameSeconds, MAX_FRAME)
+  while (clock >= STEP) {
+    stepWorld(state, STEP)
+    clock -= STEP
+  }
+}
+
+// ---------- render ----------
+
+function paintContainer(g, rotation, unit) {
+  const ctx = g.drawingContext
+  g.fill(17, 21, 36, TRAIL_ALPHA + 40)
+  g.stroke(165, 180, 255, 235)
+  g.strokeWeight(0.008)
+  ctx.shadowColor = 'rgba(120, 145, 255, 0.6)'
+  ctx.shadowBlur = unit * 0.05
+  g.beginShape()
+  for (let i = 0; i < SIDES; i++) {
+    const a = wallAngle(rotation, i + 0.5)
+    g.vertex(Math.cos(a), Math.sin(a))
+  }
+  g.endShape(CLOSE)
+  ctx.shadowBlur = 0
+  g.noStroke()
+}
+
+function paintBall(ctx, ball) {
+  const r = BALL_RADIUS
+  const shade = ctx.createRadialGradient(ball.x - r * 0.35, ball.y - r * 0.4, r * 0.1, ball.x, ball.y, r)
+  shade.addColorStop(0, `hsl(${ball.hue} 92% 80%)`)
+  shade.addColorStop(0.55, `hsl(${ball.hue} 82% 62%)`)
+  shade.addColorStop(1, `hsl(${ball.hue} 76% 44%)`)
+  ctx.fillStyle = shade
+  ctx.beginPath()
+  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2)
+  ctx.fill()
+
+  // A small dot on the rim shows the ball spinning; the number itself never rotates.
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.65)'
+  ctx.beginPath()
+  ctx.arc(ball.x + Math.cos(ball.angle) * r * 0.76, ball.y + Math.sin(ball.angle) * r * 0.76, r * 0.1, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+function paintTrail(g, state, unit) {
+  g.noStroke()
+  g.fill(BG[0], BG[1], BG[2], TRAIL_ALPHA)
+  g.rect(0, 0, g.width, g.height)
+  g.push()
+  g.translate(g.width / 2, g.height / 2)
+  g.scale(unit)
+  paintContainer(g, state.angle, unit)
+  for (const ball of state.balls) paintBall(g.drawingContext, ball)
+  g.pop()
+}
+
+// Numbers are drawn on the main canvas, outside the fading trail layer, so they stay crisp and upright.
+function paintNumbers(state, unit) {
+  noStroke()
+  fill(10, 12, 26, 220)
+  for (const ball of state.balls) {
+    textSize(unit * BALL_RADIUS * (ball.id > 99 ? 0.8 : 1.05))
+    text(ball.id, width / 2 + ball.x * unit, height / 2 + (ball.y + BALL_RADIUS * 0.06) * unit)
+  }
+}
+
+function setup() {
+  pixelDensity(Math.min(2, window.devicePixelRatio || 1))
+  createCanvas(windowWidth, windowHeight)
+  trail = createGraphics(windowWidth, windowHeight)
+  trail.background(BG[0], BG[1], BG[2])
+  textAlign(CENTER, CENTER)
+  textStyle(BOLD)
+  textFont('ui-rounded, "SF Pro Rounded", system-ui, sans-serif')
+  world = createWorld()
+}
+
+function draw() {
+  const unit = Math.min(width, height) * 0.46
+  advance(world, deltaTime / 1000)
+  paintTrail(trail, world, unit)
+  image(trail, 0, 0, width, height)
+  paintNumbers(world, unit)
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight)
+  trail.resizeCanvas(windowWidth, windowHeight)
+  trail.background(BG[0], BG[1], BG[2])
+}
+
+function keyPressed() {
+  if (key !== 'r' && key !== 'R') return
+  world = createWorld()
+  clock = 0
+}
+</script>
+</body>
+</html>

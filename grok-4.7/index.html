@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>200 BALLS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.0/p5.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #05040a;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 1080 / 1920)) !important;
+    height: min(100vh, calc(100vw * 1920 / 1080)) !important;
+    display: block;
+  }
+</style>
+</head>
+<body>
+<script>
+const MODEL_NAME = "Grok 4.7";
+
+const W = 1080;
+const H = 1920;
+const CX = 540;
+const CY = 1036;
+const R_BASE = 458;
+const BALL_R = 16;
+const BALL_COUNT = 200;
+const SUBSTEPS = 8;
+const SOLVE_ITERS = 5;
+const SLOP = 0.22;
+const MAX_SPEED = 2400;
+const PENTA = [0, 2, 4, 7, 9];
+const ACTS = [
+  { name: "DROP", dur: 6 },
+  { name: "SPIN UP", dur: 6 },
+  { name: "ZERO-G", dur: 7 },
+  { name: "GRAVITY SLOSH", dur: 7 },
+  { name: "CRUSH", dur: 6 },
+  { name: "SETTLE", dur: 1e9 },
+];
+const ACT_COLORS = [
+  { r: 72, g: 176, b: 255 },
+  { r: 255, g: 78, b: 168 },
+  { r: 186, g: 142, b: 255 },
+  { r: 42, g: 230, b: 176 },
+  { r: 255, g: 132, b: 48 },
+  { r: 150, g: 186, b: 255 },
+];
+
+let balls = [];
+let sparks = [];
+let echoes = [];
+let simTime = 0;
+let containerAngle = 0;
+let collisions = 0;
+let exploded = false;
+let lastMs = 0;
+let boom = 0;
+let boomR = 0;
+let audioCtx = null;
+let master = null;
+let voices = 0;
+let soundOn = false;
+let rngState = 1;
+let keHist = new Array(180).fill(0);
+let keHead = 0;
+let keCount = 0;
+let kePeak = 1;
+const wallProxy = { vx: 0, vy: 0, angVel: 0, invM: 0, invI: 0, r: 0 };
+
+function srand(seed) {
+  rngState = seed >>> 0;
+}
+
+function rand() {
+  rngState = (Math.imul(rngState, 1664525) + 1013904223) >>> 0;
+  return rngState / 4294967296;
+}
+
+function clamp(v, a, b) {
+  if (v < a) return a;
+  if (v > b) return b;
+  return v;
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function easeInOut(t) {
+  const x = clamp(t, 0, 1);
+  if (x < 0.5) return 2 * x * x;
+  return 1 - ((-2 * x + 2) * (-2 * x + 2)) / 2;
+}
+
+function lerpAngle(a, b, t) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+
+function hsl(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hp < 1) {
+    r = c;
+    g = x;
+  } else if (hp < 2) {
+    r = x;
+    g = c;
+  } else if (hp < 3) {
+    g = c;
+    b = x;
+  } else if (hp < 4) {
+    g = x;
+    b = c;
+  } else if (hp < 5) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+  const m = l - c / 2;
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
+}
+
+function actLocal(time) {
+  let t = time;
+  if (t < 0) t = 0;
+  for (let i = 0; i < ACTS.length; i++) {
+    if (i === ACTS.length - 1 || t < ACTS[i].dur) {
+      return { i: i, local: t, dur: ACTS[i].dur };
+    }
+    t -= ACTS[i].dur;
+  }
+  return { i: 5, local: 0, dur: 1 };
+}
+
+function crushScale(u) {
+  const t = clamp(u, 0, 1);
+  if (t < 0.4) return lerp(1, 0.72, easeInOut(t / 0.4));
+  if (t < 0.72) return lerp(0.72, 1.08, easeInOut((t - 0.4) / 0.32));
+  return lerp(1.08, 1, easeInOut((t - 0.72) / 0.28));
+}
+
+function crushScaleDot(u, dur) {
+  const h = 0.004;
+  const a = crushScale(u);
+  const b = crushScale(clamp(u + h, 0, 1));
+  return (b - a) / (h * dur);
+}
+
+function rawParams(i, local, dur) {
+  const u = dur > 1e8 ? local / 8 : local / dur;
+  if (i === 0) {
+    return { spin: 0.22, g: 1180, gAngle: Math.PI / 2, scale: 1, scaleDot: 0, damp: 0.08, rest: 0.46, fric: 0.32 };
+  }
+  if (i === 1) {
+    const e = easeInOut(clamp(u, 0, 1));
+    const gFade = u < 0.8 ? 1 : 1 - easeInOut((u - 0.8) / 0.2);
+    return { spin: lerp(0.22, 3.15, e), g: 1180 * gFade, gAngle: Math.PI / 2, scale: 1, scaleDot: 0, damp: 0.05, rest: 0.38, fric: 0.2 };
+  }
+  if (i === 2) {
+    const e = easeInOut(clamp(u * 1.15, 0, 1));
+    return { spin: lerp(3.15, 2.05, e), g: 0, gAngle: Math.PI / 2, scale: 1, scaleDot: 0, damp: 0.025, rest: 0.58, fric: 0.1 };
+  }
+  if (i === 3) {
+    const uC = clamp(u, 0, 1);
+    return {
+      spin: lerp(2.05, 0.42, easeInOut(Math.min(1, uC * 1.25))),
+      g: 1340,
+      gAngle: Math.PI / 2 + easeInOut(uC) * Math.PI * 2,
+      scale: 1,
+      scaleDot: 0,
+      damp: 0.05,
+      rest: 0.4,
+      fric: 0.24,
+    };
+  }
+  if (i === 4) {
+    const uC = clamp(u, 0, 1);
+    return {
+      spin: 0.34,
+      g: 1080,
+      gAngle: Math.PI / 2,
+      scale: crushScale(uC),
+      scaleDot: crushScaleDot(uC, dur),
+      damp: 0.1,
+      rest: 0.2,
+      fric: 0.4,
+    };
+  }
+  const e = easeInOut(Math.min(1, local / 5));
+  return {
+    spin: lerp(0.34, 0, e),
+    g: 1200,
+    gAngle: Math.PI / 2,
+    scale: 1,
+    scaleDot: 0,
+    damp: lerp(0.22, 2.05, e),
+    rest: lerp(0.18, 0.03, e),
+    fric: lerp(0.4, 0.75, e),
+  };
+}
+
+function paramsAt(time) {
+  const a = actLocal(time);
+  const cur = rawParams(a.i, a.local, a.dur);
+  const blend = 0.85;
+  if (a.i === 0 || a.local >= blend) {
+    cur.act = a.i;
+    cur.local = a.local;
+    cur.dur = a.dur;
+    return cur;
+  }
+  const prev = ACTS[a.i - 1];
+  const prevRaw = rawParams(a.i - 1, Math.max(0, prev.dur - 0.001), prev.dur);
+  const k = easeInOut(a.local / blend);
+  return {
+    spin: lerp(prevRaw.spin, cur.spin, k),
+    g: lerp(prevRaw.g, cur.g, k),
+    gAngle: lerpAngle(prevRaw.gAngle, cur.gAngle, k),
+    scale: lerp(prevRaw.scale, cur.scale, k),
+    scaleDot: a.local < blend ? 0 : cur.scaleDot,
+    damp: lerp(prevRaw.damp, cur.damp, k),
+    rest: lerp(prevRaw.rest, cur.rest, k),
+    fric: lerp(prevRaw.fric, cur.fric, k),
+    act: a.i,
+    local: a.local,
+    dur: a.dur,
+  };
+}
+
+function inkAt(time) {
+  const a = actLocal(time);
+  const c1 = ACT_COLORS[a.i];
+  if (a.i === 0 || a.local > 0.85) return c1;
+  const c0 = ACT_COLORS[a.i - 1];
+  const k = easeInOut(a.local / 0.85);
+  return {
+    r: lerp(c0.r, c1.r, k),
+    g: lerp(c0.g, c1.g, k),
+    b: lerp(c0.b, c1.b, k),
+  };
+}
+
+function buildShape(radius, angle) {
+  const n = 7;
+  const start = Math.PI / 2 - Math.PI / n;
+  const verts = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = start + angle + (i * 2 * Math.PI) / n;
+    verts[i] = { x: CX + Math.cos(a) * radius, y: CY + Math.sin(a) * radius };
+  }
+  const edges = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const v0 = verts[i];
+    const v1 = verts[(i + 1) % n];
+    const ex = v1.x - v0.x;
+    const ey = v1.y - v0.y;
+    const len = Math.hypot(ex, ey) || 1;
+    edges[i] = { x: v0.x, y: v0.y, nx: -ey / len, ny: ex / len };
+  }
+  return { verts: verts, edges: edges };
+}
+
+function minSigned(x, y, edges) {
+  let best = Infinity;
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    const sd = (x - e.x) * e.nx + (y - e.y) * e.ny;
+    if (sd < best) best = sd;
+  }
+  return best;
+}
+
+function makeBall(n, x, y) {
+  const r = BALL_R;
+  const m = r * r;
+  return {
+    n: n,
+    x: x,
+    y: y,
+    r: r,
+    m: m,
+    invM: 1 / m,
+    invI: 2 / (m * r * r),
+    vx: (rand() - 0.5) * 16,
+    vy: (rand() - 0.5) * 8,
+    ang: rand() * Math.PI * 2,
+    angVel: (rand() - 0.5) * 0.4,
+    col: hsl((n * 137.508) % 360, 0.8, 0.54 + (n % 4) * 0.015),
+    flash: 0,
+    trail: [],
+    pingAt: 0,
+  };
+}
+
+function spawnBalls() {
+  srand(200);
+  const shape = buildShape(R_BASE * 0.985, 0);
+  const list = [];
+  const gapX = BALL_R * 2 + 2.4;
+  const gapY = BALL_R * Math.sqrt(3) + 2.2;
+  const y0 = CY - R_BASE * 0.8;
+  let n = 1;
+  let row = 0;
+  while (n <= BALL_COUNT && row < 90) {
+    const y = y0 + row * gapY;
+    const cols = 20;
+    const stagger = (row % 2) * gapX * 0.5;
+    for (let c = 0; c < cols && n <= BALL_COUNT; c++) {
+      const x = CX - ((cols - 1) * gapX) * 0.5 + c * gapX + stagger;
+      if (minSigned(x, y, shape.edges) > BALL_R + 2.5) {
+        list.push(makeBall(n, x, y));
+        n += 1;
+      }
+    }
+    row += 1;
+  }
+  let k = list.length;
+  while (list.length < BALL_COUNT) {
+    k += 1;
+    const a = k * 2.399963;
+    const rad = 10 * Math.sqrt(k);
+    list.push(makeBall(list.length + 1, CX + Math.cos(a) * rad, CY - 80 + Math.sin(a) * rad * 0.72));
+  }
+  return list;
+}
+
+function resetSim() {
+  balls = spawnBalls();
+  sparks = [];
+  echoes = [];
+  simTime = 0;
+  containerAngle = 0;
+  collisions = 0;
+  exploded = false;
+  boom = 0;
+  boomR = 0;
+  keHist = new Array(180).fill(0);
+  keHead = 0;
+  keCount = 0;
+  kePeak = 1;
+  lastMs = millis();
+}
+
+function pointVel(x, y, p) {
+  const rx = x - CX;
+  const ry = y - CY;
+  const s = p.scale > 1e-4 ? p.scale : 1e-4;
+  const radial = p.scaleDot / s;
+  return {
+    x: -p.spin * ry + radial * rx,
+    y: p.spin * rx + radial * ry,
+  };
+}
+
+function onVoiceEnd() {
+  voices = Math.max(0, voices - 1);
+}
+
+function freqForBall(n) {
+  const t = (n - 1) / 199;
+  const semis = t * 31;
+  const oct = Math.floor(semis / 12);
+  const within = semis - oct * 12;
+  let best = PENTA[0];
+  let bestD = 99;
+  for (let i = 0; i < PENTA.length; i++) {
+    const d = Math.abs(PENTA[i] - within);
+    if (d < bestD) {
+      bestD = d;
+      best = PENTA[i];
+    }
+  }
+  const midi = 57 + oct * 12 + best;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+function startAudio() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!audioCtx) {
+    audioCtx = new Ctx();
+    master = audioCtx.createGain();
+    master.gain.value = 0.5;
+    master.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  soundOn = true;
+}
+
+function maybePing(ball, speed) {
+  if (!soundOn || !audioCtx || !master || voices >= 8) return;
+  if (!ball || !ball.n) return;
+  if (simTime < ball.pingAt) return;
+  if (speed < 155) return;
+  ball.pingAt = simTime + 0.048;
+  const vol = Math.min(0.14, speed / 5600);
+  if (vol < 0.012) return;
+  const t = audioCtx.currentTime;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+  gain.connect(master);
+  const osc = audioCtx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.value = freqForBall(ball.n);
+  osc.connect(gain);
+  osc.start(t);
+  osc.stop(t + 0.15);
+  const harm = audioCtx.createOscillator();
+  harm.type = "triangle";
+  harm.frequency.value = freqForBall(ball.n) * 2;
+  harm.connect(gain);
+  harm.start(t);
+  harm.stop(t + 0.05);
+  voices += 1;
+  osc.onended = onVoiceEnd;
+}
+
+function spawnSparks(x, y, nx, ny, speed, col) {
+  if (sparks.length > 300) return;
+  const count = speed > 520 ? 6 : 4;
+  const tx = -ny;
+  const ty = nx;
+  for (let i = 0; i < count; i++) {
+    const spread = (rand() - 0.5) * 1.6;
+    const mag = 70 + rand() * 240 * Math.min(1, speed / 700);
+    sparks.push({
+      x: x,
+      y: y,
+      vx: -nx * mag * 0.7 + tx * mag * spread,
+      vy: -ny * mag * 0.7 + ty * mag * spread,
+      life: 0.22 + rand() * 0.28,
+      max: 0.5,
+      col: col,
+    });
+  }
+}
+
+function resolveContact(a, other, nx, ny, e, mu, countIt) {
+  const rax = nx * a.r;
+  const ray = ny * a.r;
+  const rbx = -nx * other.r;
+  const rby = -ny * other.r;
+  const vax = a.vx - a.angVel * ray;
+  const vay = a.vy + a.angVel * rax;
+  const vox = other.vx - other.angVel * rby;
+  const voy = other.vy + other.angVel * rbx;
+  const rvx = vox - vax;
+  const rvy = voy - vay;
+  const velN = rvx * nx + rvy * ny;
+  if (velN >= -0.01) return;
+
+  const raN = rax * ny - ray * nx;
+  const roN = rbx * ny - rby * nx;
+  const invN = a.invM + other.invM + raN * raN * a.invI + roN * roN * other.invI;
+  if (invN <= 1e-8) return;
+  const eUse = velN < -32 ? e : 0;
+  const jn = -(1 + eUse) * velN / invN;
+  a.vx -= nx * jn * a.invM;
+  a.vy -= ny * jn * a.invM;
+  a.angVel -= raN * jn * a.invI;
+  if (other.invM > 0) {
+    other.vx += nx * jn * other.invM;
+    other.vy += ny * jn * other.invM;
+    other.angVel += roN * jn * other.invI;
+  }
+
+  const tx = -ny;
+  const ty = nx;
+  const velT = rvx * tx + rvy * ty;
+  const raT = rax * ty - ray * tx;
+  const roT = rbx * ty - rby * tx;
+  const invT = a.invM + other.invM + raT * raT * a.invI + roT * roT * other.invI;
+  if (invT > 1e-8) {
+    let jt = -velT / invT;
+    const lim = mu * jn;
+    if (jt > lim) jt = lim;
+    if (jt < -lim) jt = -lim;
+    a.vx -= tx * jt * a.invM;
+    a.vy -= ty * jt * a.invM;
+    a.angVel -= raT * jt * a.invI;
+    if (other.invM > 0) {
+      other.vx += tx * jt * other.invM;
+      other.vy += ty * jt * other.invM;
+      other.angVel += roT * jt * other.invI;
+    }
+  }
+
+  if (!countIt) return;
+  const impact = -velN;
+  if (impact < 95) return;
+  collisions += 1;
+  const f = Math.min(1, impact / 820);
+  if (f > a.flash) a.flash = f;
+  if (other.flash !== undefined && f > other.flash) other.flash = f;
+  if (impact < 160) return;
+  spawnSparks(a.x + nx * a.r, a.y + ny * a.r, nx, ny, impact, a.col);
+  maybePing(a, impact);
+  if (other.n) maybePing(other, impact * 0.82);
+}
+
+function buildGrid(list, cell) {
+  const grid = {};
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    const key = (Math.floor(b.x / cell) + 4000) * 9176 + Math.floor(b.y / cell);
+    const bucket = grid[key];
+    if (bucket) bucket.push(i);
+    else grid[key] = [i];
+  }
+  return grid;
+}
+
+function collidePair(a, b, p, countIt) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const d2 = dx * dx + dy * dy;
+  const minD = a.r + b.r;
+  if (d2 < 1e-8) {
+    a.x -= 0.4;
+    b.x += 0.4;
+    return;
+  }
+  if (d2 >= minD * minD) return;
+  const d = Math.sqrt(d2);
+  const nx = dx / d;
+  const ny = dy / d;
+  const pen = minD - d;
+  if (pen > SLOP) {
+    const push = (pen - SLOP) * 0.42;
+    a.x -= nx * push;
+    a.y -= ny * push;
+    b.x += nx * push;
+    b.y += ny * push;
+  }
+  resolveContact(a, b, nx, ny, p.rest, p.fric, countIt);
+}
+
+function solveBalls(p, countIt) {
+  const cell = BALL_R * 2;
+  const grid = buildGrid(balls, cell);
+  for (let i = 0; i < balls.length; i++) {
+    const a = balls[i];
+    const cx = Math.floor(a.x / cell);
+    const cy = Math.floor(a.y / cell);
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const bucket = grid[(cx + ox + 4000) * 9176 + (cy + oy)];
+        if (!bucket) continue;
+        for (let k = 0; k < bucket.length; k++) {
+          const j = bucket[k];
+          if (j <= i) continue;
+          collidePair(a, balls[j], p, countIt);
+        }
+      }
+    }
+  }
+}
+
+function solveWalls(edges, p, countIt) {
+  for (let i = 0; i < balls.length; i++) {
+    const a = balls[i];
+    for (let k = 0; k < edges.length; k++) {
+      const e = edges[k];
+      const sd = (a.x - e.x) * e.nx + (a.y - e.y) * e.ny;
+      const pen = a.r - sd;
+      if (pen <= 0) continue;
+      if (pen > SLOP) {
+        const push = (pen - SLOP) * 0.8;
+        a.x += e.nx * push;
+        a.y += e.ny * push;
+      }
+      const sd2 = (a.x - e.x) * e.nx + (a.y - e.y) * e.ny;
+      const vw = pointVel(a.x - e.nx * sd2, a.y - e.ny * sd2, p);
+      wallProxy.vx = vw.x;
+      wallProxy.vy = vw.y;
+      wallProxy.angVel = 0;
+      resolveContact(a, wallProxy, -e.nx, -e.ny, p.rest, p.fric, countIt);
+    }
+  }
+}
+
+function contain(edges) {
+  for (let i = 0; i < balls.length; i++) {
+    const a = balls[i];
+    for (let k = 0; k < edges.length; k++) {
+      const e = edges[k];
+      const sd = (a.x - e.x) * e.nx + (a.y - e.y) * e.ny;
+      if (sd >= a.r - 0.12) continue;
+      const pen = a.r - sd;
+      a.x += e.nx * pen;
+      a.y += e.ny * pen;
+      const vn = a.vx * e.nx + a.vy * e.ny;
+      if (vn < 0) {
+        a.vx -= e.nx * vn;
+        a.vy -= e.ny * vn;
+      }
+    }
+  }
+}
+
+function explode() {
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < balls.length; i++) {
+    sx += balls[i].x;
+    sy += balls[i].y;
+  }
+  sx /= balls.length;
+  sy /= balls.length;
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    let dx = b.x - sx;
+    let dy = b.y - sy;
+    const d = Math.hypot(dx, dy) || 1;
+    dx /= d;
+    dy /= d;
+    const mag = 780 + rand() * 460;
+    b.vx += dx * mag + (rand() - 0.5) * 200;
+    b.vy += dy * mag + (rand() - 0.5) * 200;
+    b.angVel += (rand() - 0.5) * 16;
+    b.flash = 1;
+  }
+  boom = 1;
+  boomR = 28;
+  const col = ACT_COLORS[2];
+  for (let i = 0; i < 40; i++) {
+    const a = (i / 40) * Math.PI * 2 + rand() * 0.2;
+    const mag = 180 + rand() * 520;
+    sparks.push({
+      x: sx,
+      y: sy,
+      vx: Math.cos(a) * mag,
+      vy: Math.sin(a) * mag,
+      life: 0.35 + rand() * 0.35,
+      max: 0.7,
+      col: col,
+    });
+  }
+}
+
+function substep(h) {
+  const p = paramsAt(simTime);
+  if (p.act === 2 && !exploded) {
+    explode();
+    exploded = true;
+  }
+  containerAngle += p.spin * h;
+  const radius = R_BASE * p.scale;
+  const shape = buildShape(radius, containerAngle);
+  const gx = Math.cos(p.gAngle) * p.g;
+  const gy = Math.sin(p.gAngle) * p.g;
+  const linDamp = Math.exp(-p.damp * h);
+  const angDamp = Math.exp(-p.damp * 0.7 * h);
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    b.vx = (b.vx + gx * h) * linDamp;
+    b.vy = (b.vy + gy * h) * linDamp;
+    b.angVel *= angDamp;
+    b.x += b.vx * h;
+    b.y += b.vy * h;
+    b.ang += b.angVel * h;
+    const sp2 = b.vx * b.vx + b.vy * b.vy;
+    if (sp2 > MAX_SPEED * MAX_SPEED) {
+      const k = MAX_SPEED / Math.sqrt(sp2);
+      b.vx *= k;
+      b.vy *= k;
+    }
+    if (b.angVel > 28) b.angVel = 28;
+    if (b.angVel < -28) b.angVel = -28;
+  }
+  for (let iter = 0; iter < SOLVE_ITERS; iter++) {
+    const countIt = iter === 0;
+    solveBalls(p, countIt);
+    solveWalls(shape.edges, p, countIt);
+  }
+  contain(shape.edges);
+  if (p.act === 5) sleepPile();
+}
+
+function sleepPile() {
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    const sp2 = b.vx * b.vx + b.vy * b.vy;
+    if (sp2 < 20 && Math.abs(b.angVel) < 0.25) {
+      b.vx = 0;
+      b.vy = 0;
+      b.angVel = 0;
+    }
+  }
+}
+
+function updateSparks(dt) {
+  const gy = 520 * dt;
+  let w = 0;
+  for (let i = 0; i < sparks.length; i++) {
+    const s = sparks[i];
+    s.life -= dt;
+    if (s.life <= 0) continue;
+    s.vy += gy;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vx *= 0.986;
+    s.vy *= 0.986;
+    sparks[w] = s;
+    w += 1;
+  }
+  sparks.length = w;
+}
+
+function sampleKE() {
+  let ke = 0;
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    ke += b.m * (b.vx * b.vx + b.vy * b.vy);
+    ke += (b.angVel * b.angVel) / b.invI;
+  }
+  ke *= 0.5;
+  keHist[keHead] = ke;
+  keHead = (keHead + 1) % keHist.length;
+  if (keCount < keHist.length) keCount += 1;
+  if (ke > kePeak) kePeak = ke;
+  else kePeak += (ke - kePeak) * 0.01;
+  if (kePeak < 1) kePeak = 1;
+}
+
+function drawPoly(verts) {
+  beginShape();
+  for (let i = 0; i < verts.length; i++) vertex(verts[i].x, verts[i].y);
+  endShape(CLOSE);
+}
+
+function drawBackdrop(ink) {
+  background(6, 5, 12);
+  noStroke();
+  for (let i = 8; i >= 1; i--) {
+    fill(ink.r, ink.g, ink.b, 2 + i * 1.6);
+    circle(CX, CY + 30, 220 + i * 200);
+  }
+  fill(ink.r * 0.4, ink.g * 0.35, ink.b * 0.5, 28);
+  circle(CX - 180, CY - 80, 340);
+  fill(255, 255, 255, 8);
+  circle(CX + 140, CY + 160, 260);
+}
+
+function drawContainer(ink, heptScale) {
+  const n = echoes.length;
+  noFill();
+  for (let i = 0; i < n; i++) {
+    const ghost = echoes[i];
+    const shape = buildShape(R_BASE * ghost.scale, ghost.angle);
+    stroke(ink.r, ink.g, ink.b, 8 + (i / n) * 22);
+    strokeWeight(1.6);
+    drawPoly(shape.verts);
+  }
+  const outer = buildShape(R_BASE * heptScale * 1.055, containerAngle);
+  stroke(ink.r, ink.g, ink.b, 28);
+  strokeWeight(2);
+  drawPoly(outer.verts);
+  const mid = buildShape(R_BASE * heptScale * 1.028, containerAngle);
+  stroke(ink.r, ink.g, ink.b, 48);
+  strokeWeight(1.5);
+  drawPoly(mid.verts);
+
+  const shape = buildShape(R_BASE * heptScale, containerAngle);
+  const weights = [22, 12, 6];
+  const alphas = [16, 30, 52];
+  for (let i = 0; i < weights.length; i++) {
+    stroke(ink.r, ink.g, ink.b, alphas[i]);
+    strokeWeight(weights[i]);
+    drawPoly(shape.verts);
+  }
+  noStroke();
+  fill(ink.r, ink.g, ink.b, 12);
+  drawPoly(shape.verts);
+  return shape;
+}
+
+function drawContainerRim(shape, ink) {
+  noFill();
+  stroke(ink.r, ink.g, ink.b, 210);
+  strokeWeight(3.2);
+  drawPoly(shape.verts);
+  stroke(255, 255, 255, 230);
+  strokeWeight(1.4);
+  drawPoly(shape.verts);
+  for (let i = 0; i < shape.verts.length; i++) {
+    const v = shape.verts[i];
+    noStroke();
+    fill(ink.r, ink.g, ink.b, 90);
+    circle(v.x, v.y, 14);
+    fill(255, 245);
+    circle(v.x, v.y, 5);
+  }
+}
+
+function drawTrails() {
+  noStroke();
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    const trail = b.trail;
+    for (let k = 0; k < trail.length; k++) {
+      const a = ((k + 1) / (trail.length + 1)) * 32;
+      fill(b.col.r, b.col.g, b.col.b, a);
+      circle(trail[k].x, trail[k].y, b.r * (1.1 + k / trail.length));
+    }
+  }
+}
+
+function drawBalls() {
+  textAlign(CENTER, CENTER);
+  textStyle(NORMAL);
+  textSize(10);
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    const hx = Math.cos(b.ang - 1.05) * b.r * 0.32;
+    const hy = Math.sin(b.ang - 1.05) * b.r * 0.32;
+    noStroke();
+    fill(b.col.r * 0.38, b.col.g * 0.38, b.col.b * 0.38);
+    circle(b.x + 1.2, b.y + 1.4, b.r * 2);
+    fill(b.col.r, b.col.g, b.col.b);
+    circle(b.x, b.y, b.r * 1.86);
+    fill(255, 255, 255, 92);
+    circle(b.x + hx, b.y + hy, b.r * 0.58);
+    fill(0, 0, 0, 28);
+    circle(b.x - hx * 0.35, b.y - hy * 0.35, b.r * 0.9);
+    noFill();
+    stroke(255, 255, 255, 36);
+    strokeWeight(1);
+    circle(b.x, b.y, b.r * 2);
+    if (b.flash > 0.03) {
+      noStroke();
+      fill(255, 255, 255, 170 * b.flash);
+      circle(b.x, b.y, b.r * 2);
+    }
+    noStroke();
+    fill(8, 6, 16, 78);
+    circle(b.x, b.y, b.r * 1.12);
+    fill(255);
+    text(b.n, b.x, b.y + 0.5);
+    b.flash *= 0.88;
+  }
+}
+
+function drawSparks() {
+  strokeWeight(1.6);
+  for (let i = 0; i < sparks.length; i++) {
+    const s = sparks[i];
+    const a = Math.max(0, s.life / s.max) * 230;
+    stroke(s.col.r, s.col.g, s.col.b, a);
+    line(s.x, s.y, s.x - s.vx * 0.018, s.y - s.vy * 0.018);
+  }
+}
+
+function drawTracked(str, x, y, spacing) {
+  let total = 0;
+  for (let i = 0; i < str.length; i++) total += textWidth(str.charAt(i)) + spacing;
+  total -= spacing;
+  let cx = x - total * 0.5;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charAt(i);
+    const wch = textWidth(ch);
+    text(ch, cx + wch * 0.5, y);
+    cx += wch + spacing;
+  }
+}
+
+function formatInt(n) {
+  return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const d = Math.floor((t % 1) * 10);
+  const ss = s < 10 ? "0" + s : String(s);
+  return m + ":" + ss + "." + d;
+}
+
+function drawHUD(ink, p) {
+  const u = p.dur > 1e8 ? clamp(p.local / 8, 0, 1) : clamp(p.local / p.dur, 0, 1);
+  textAlign(CENTER, CENTER);
+  textStyle(BOLD);
+  textSize(18);
+  const label = MODEL_NAME;
+  const bw = textWidth(label) + 44;
+  const bh = 36;
+  const bx = (W - bw) * 0.5;
+  const by = 36;
+  noStroke();
+  fill(ink.r, ink.g, ink.b, 28);
+  rect(bx, by, bw, bh, 18);
+  stroke(ink.r, ink.g, ink.b, 200);
+  strokeWeight(1.4);
+  noFill();
+  rect(bx, by, bw, bh, 18);
+  noStroke();
+  fill(ink.r, ink.g, ink.b);
+  circle(bx + 18, by + bh * 0.5, 8);
+  fill(255);
+  text(label, W * 0.5 + 6, by + bh * 0.5 + 1);
+
+  textSize(58);
+  fill(255);
+  drawTracked("200 BALLS", W * 0.5, 124, 3);
+  textStyle(NORMAL);
+  textSize(24);
+  fill(ink.r, ink.g, ink.b);
+  text(ACTS[p.act].name, W * 0.5, 172);
+
+  const barW = 640;
+  const barX = (W - barW) * 0.5;
+  const barY = 198;
+  noStroke();
+  fill(255, 255, 255, 16);
+  rect(barX, barY, barW, 8, 4);
+  const fw = Math.max(8, barW * u);
+  fill(ink.r, ink.g, ink.b, 40);
+  rect(barX - 1, barY - 2, fw + 2, 12, 6);
+  fill(ink.r, ink.g, ink.b, 235);
+  rect(barX, barY, fw, 8, 4);
+
+  textSize(16);
+  textAlign(LEFT, CENTER);
+  fill(210, 214, 226);
+  text("COLLISIONS", barX, 236);
+  textAlign(RIGHT, CENTER);
+  fill(255);
+  text(formatInt(collisions), barX + 300, 236);
+  textAlign(LEFT, CENTER);
+  fill(210, 214, 226);
+  text("TIME", barX + 360, 236);
+  textAlign(RIGHT, CENTER);
+  fill(255);
+  text(formatTime(simTime), barX + barW, 236);
+
+  textAlign(CENTER, CENTER);
+  textSize(13);
+  fill(170, 176, 190);
+  if (!soundOn) text("CLICK FOR SOUND    ·    R RESTART", W * 0.5, 274);
+  else text("R RESTART", W * 0.5, 274);
+
+  drawGraph(ink);
+}
+
+function drawGraph(ink) {
+  const x = 90;
+  const y = 1648;
+  const w = 900;
+  const h = 148;
+  noStroke();
+  fill(0, 0, 0, 70);
+  rect(x, y, w, h, 14);
+  stroke(255, 255, 255, 28);
+  strokeWeight(1);
+  noFill();
+  rect(x, y, w, h, 14);
+  noStroke();
+  textAlign(LEFT, CENTER);
+  textSize(13);
+  fill(ink.r, ink.g, ink.b, 220);
+  text("KINETIC ENERGY", x + 16, y + 18);
+  if (keCount < 2) return;
+  const peak = kePeak;
+  stroke(ink.r, ink.g, ink.b, 230);
+  strokeWeight(2.2);
+  noFill();
+  beginShape();
+  for (let i = 0; i < keCount; i++) {
+    const idx = (keHead - keCount + i + keHist.length) % keHist.length;
+    const px = x + 12 + (i / (keHist.length - 1)) * (w - 24);
+    const py = y + h - 16 - (keHist[idx] / peak) * (h - 42);
+    vertex(px, py);
+  }
+  endShape();
+}
+
+function recordMotion(heptScale) {
+  echoes.push({ angle: containerAngle, scale: heptScale });
+  if (echoes.length > 6) echoes.shift();
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    const sp = Math.hypot(b.vx, b.vy);
+    if (sp > 55) {
+      b.trail.push({ x: b.x, y: b.y });
+      if (b.trail.length > 7) b.trail.shift();
+    } else if (b.trail.length > 0) {
+      b.trail.shift();
+    }
+  }
+}
+
+function render() {
+  const p = paramsAt(simTime);
+  const ink = inkAt(simTime);
+  drawBackdrop(ink);
+  const shape = drawContainer(ink, p.scale);
+  drawTrails();
+  drawBalls();
+  drawSparks();
+  drawContainerRim(shape, ink);
+  if (boom > 0.02) {
+    noFill();
+    stroke(255, 255, 255, 160 * boom);
+    strokeWeight(2.5);
+    circle(CX, CY, boomR);
+    stroke(ink.r, ink.g, ink.b, 110 * boom);
+    strokeWeight(8);
+    circle(CX, CY, boomR * 0.82);
+    boom *= 0.93;
+    boomR += 26;
+  }
+  drawHUD(ink, p);
+}
+
+function setup() {
+  createCanvas(W, H);
+  pixelDensity(1);
+  frameRate(60);
+  colorMode(RGB, 255);
+  textFont("Avenir Next, Segoe UI, Helvetica Neue, sans-serif");
+  resetSim();
+  background(6, 5, 12);
+}
+
+function draw() {
+  const now = millis();
+  let dt = (now - lastMs) / 1000;
+  lastMs = now;
+  if (dt > 0.034) dt = 0.034;
+  if (dt < 0) dt = 0;
+  const h = dt / SUBSTEPS;
+  for (let i = 0; i < SUBSTEPS; i++) {
+    substep(h);
+    simTime += h;
+  }
+  const p = paramsAt(simTime);
+  updateSparks(dt);
+  sampleKE();
+  recordMotion(p.scale);
+  render();
+}
+
+function keyPressed() {
+  if (key === "r" || key === "R") resetSim();
+}
+
+function mousePressed() {
+  startAudio();
+}
+
+function touchStarted() {
+  startAudio();
+  return false;
+}
+</script>
+</body>
+</html>

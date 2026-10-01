@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>200 Balls · One Heptagon</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 0; right: 0; bottom: 10px; text-align: center;
+    font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .08em;
+    color: rgba(190, 200, 255, .5); pointer-events: none;
+    animation: fade 1s 6s forwards;
+  }
+  @keyframes fade { to { opacity: 0; } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+</head>
+<body>
+<div class="hint">R — restart · click — sound on</div>
+<script>
+// Canvas is a fixed 1080x1920 (9:16) and is CSS-scaled to fit the window.
+// World units: the heptagon's circumradius is 1, +y points down.
+const W = 1080
+const H = 1920
+const CX = W / 2
+const CY = 960
+const UNIT = 505                // world unit -> px
+const MODEL_LABEL = 'CLAUDE SONNET 5.5'
+
+const BALL_COUNT = 200
+const SIDES = 7
+const APOTHEM = Math.cos(Math.PI / SIDES)
+const BALL_RADIUS = 0.048
+const GRAVITY = 3.2
+const STEP = 1 / 480
+const MAX_FRAME = 1 / 20
+const SOLVER_PASSES = 10        // stacks ~10 balls tall need many passes to carry their load
+const WALL_BOUNCE = 0.5
+const BALL_BOUNCE = 0.55
+const MAX_BOUNCE = 0.97
+const HEAT_RATE = 3            // 1/s: how fast a slow ball is pushed up to the act's minimum speed
+const REST_SPEED = 0.1          // slower impacts don't bounce, so piles can settle
+const WALL_FRICTION = 0.4
+const BALL_FRICTION = 0.25
+const LINEAR_DRAG = 0.05
+const SPIN_DRAG = 1.2
+const HIT_MIN = 0.08            // impulse above which a contact counts as a real collision
+const TRAIL_FADE = 0.3          // fraction of the trail layer erased each frame
+const MAX_SPARKS = 500
+const MAX_EVENTS = 240
+
+// Each act steers the container; the world eases toward its target so changes feel physical.
+const ACTS = [
+  { name: 'DROP', dur: 6, tint: [120, 150, 255], target: () => ({ spin: 0.35, gscale: 1, gspin: 0, size: 1, bounce: 1 }) },
+  { name: 'SPIN UP', dur: 6, tint: [190, 110, 255], target: () => ({ spin: 1.9, gscale: 1, gspin: 0, size: 1, bounce: 1 }) },
+  { name: 'ZERO-G', dur: 7, kick: 2.2, tint: [90, 230, 255], target: () => ({ spin: 0.8, gscale: 0, gspin: 0, size: 1, bounce: 1.75, heat: 0.9 }) },
+  { name: 'GRAVITY SLOSH', dur: 7, tint: [255, 100, 190], target: () => ({ spin: 0.35, gscale: 1, gspin: 1.5, size: 1, bounce: 1 }) },
+  {
+    name: 'CRUSH',
+    dur: 6,
+    tint: [255, 150, 70],
+    target: (u) => ({ spin: 0.6, gscale: 1, gspin: 0, size: 0.92 + 0.08 * Math.cos((u * 2 * Math.PI) / 2.4), bounce: 1 }),
+  },
+  { name: 'SETTLE', dur: Infinity, tint: [110, 255, 170], target: () => ({ spin: 0.2, gscale: 1, gspin: 0, size: 1, bounce: 1 }) },
+]
+
+let world
+let trail
+let backdrop
+let trailCtx
+let clock = 0
+const audio = { ctx: null, last: 0 }
+
+// ---------- helpers ----------
+
+const clamp = (value, low, high) => Math.max(low, Math.min(high, value))
+const ease = (current, target, dt, tau) => current + (target - current) * (1 - Math.exp(-dt / tau))
+const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+const rgba = (rgb, alpha) => `rgba(${rgb[0] | 0}, ${rgb[1] | 0}, ${rgb[2] | 0}, ${alpha})`
+
+function shuffle(items) {
+  const result = items.slice()
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const held = result[i]
+    result[i] = result[j]
+    result[j] = held
+  }
+  return result
+}
+
+function wallAngle(rotation, index) {
+  return rotation + Math.PI / 2 + (index * 2 * Math.PI) / SIDES
+}
+
+function actAt(time) {
+  let start = 0
+  for (let i = 0; i < ACTS.length; i++) {
+    if (time < start + ACTS[i].dur || i === ACTS.length - 1) return { index: i, act: ACTS[i], local: time - start }
+    start += ACTS[i].dur
+  }
+}
+
+// ---------- world ----------
+
+function isInsideMargin(x, y, margin) {
+  for (let i = 0; i < SIDES; i++) {
+    const a = wallAngle(0, i)
+    if (APOTHEM - (x * Math.cos(a) + y * Math.sin(a)) < margin) return false
+  }
+  return true
+}
+
+// Hex lattice inside the heptagon, topmost points first, so the balls start as a block and drop.
+function latticePoints() {
+  const spacing = BALL_RADIUS * 2.3
+  const rowHeight = spacing * 0.866
+  const points = []
+  for (let row = 0; row * rowHeight < 2; row++) {
+    const y = -1 + row * rowHeight
+    const shift = row % 2 ? spacing / 2 : 0
+    for (let x = -1 + shift; x < 1; x += spacing) {
+      if (!isInsideMargin(x, y, BALL_RADIUS * 1.3)) continue
+      points.push({ x, y })
+    }
+  }
+  return points.sort((a, b) => a.y - b.y)
+}
+
+function createWorld() {
+  const ids = shuffle(Array.from({ length: BALL_COUNT }, (_, i) => i + 1))
+  const jitter = () => (Math.random() - 0.5) * BALL_RADIUS * 0.2
+  const balls = latticePoints().slice(0, BALL_COUNT).map((point, i) => ({
+    id: ids[i],
+    x: point.x + jitter(),
+    y: point.y + jitter(),
+    vx: (Math.random() - 0.5) * 0.3,
+    vy: Math.random() * 0.2,
+    angle: Math.random() * Math.PI * 2,
+    spin: 0,
+    glow: 0,
+    hue: ((ids[i] - 1) / BALL_COUNT) * 330,
+  }))
+  return {
+    time: 0,
+    act: -1,
+    angle: 0,
+    spin: 0.35,
+    size: 1,
+    bounce: 1,
+    heat: 0,
+    apo: APOTHEM,
+    apoRate: 0,
+    gscale: 1,
+    gangle: 0,
+    gspin: 0,
+    tint: ACTS[0].tint.slice(),
+    balls,
+    flashes: new Array(SIDES).fill(0),
+    sparks: [],
+    rings: [],
+    events: [],
+    collisions: 0,
+    energy: [],
+    lastSample: 0,
+  }
+}
+
+// ---------- director ----------
+
+function explode(state, kick) {
+  for (const ball of state.balls) {
+    const away = Math.atan2(ball.y, ball.x) + (Math.random() - 0.5) * 0.6
+    const speed = kick * (0.6 + Math.random() * 0.8)
+    ball.vx += Math.cos(away) * speed
+    ball.vy += Math.sin(away) * speed
+    ball.glow = 1
+  }
+}
+
+function enterAct(state, index) {
+  const act = ACTS[index]
+  state.act = index
+  state.rings.push({ r: 0.05, life: 1, color: act.tint })
+  if (act.kick) explode(state, act.kick)
+}
+
+function steer(state, dt) {
+  const { index, act, local } = actAt(state.time)
+  if (index !== state.act) enterAct(state, index)
+  const target = act.target(local)
+  state.spin = ease(state.spin, target.spin, dt, 0.6)
+  state.gscale = ease(state.gscale, target.gscale, dt, 0.35)
+  state.gspin = ease(state.gspin, target.gspin, dt, 0.4)
+  state.size = ease(state.size, target.size, dt, 0.12)
+  state.bounce = ease(state.bounce, target.bounce, dt, 0.3)
+  state.heat = ease(state.heat, target.heat || 0, dt, 0.3)
+  state.tint = state.tint.map((channel, i) => ease(channel, act.tint[i], dt, 0.5))
+  state.angle += state.spin * dt
+  state.gangle = wrapAngle(state.gangle + state.gspin * dt)
+  if (target.gspin === 0) state.gangle *= Math.exp(-dt / 0.5)
+  const apo = APOTHEM * state.size
+  state.apoRate = (apo - state.apo) / dt
+  state.apo = apo
+}
+
+// ---------- physics ----------
+// The solver mutates balls in place: 200 balls x 480 steps/s makes copying wasteful.
+
+function getWalls(rotation) {
+  return Array.from({ length: SIDES }, (_, i) => {
+    const a = wallAngle(rotation, i)
+    return { ux: Math.cos(a), uy: Math.sin(a) } // outward normal
+  })
+}
+
+// Normal + Coulomb friction impulse for one contact, per ball.
+// (nx, ny) is the contact normal, (rvx, rvy) the relative velocity of the ball being pushed,
+// `share` how much of the closing speed it absorbs (1 wall, 1/2 pair) and `tangentMass`
+// the contact's slip response (3 for a wall, 6 for a pair of solid discs).
+function contactImpulse(contact, bounce, friction, share, tangentMass) {
+  const { rvx, rvy, nx, ny, spinSum } = contact
+  const vn = rvx * nx + rvy * ny
+  if (vn >= 0) return null
+  const restitution = -vn < REST_SPEED ? 0 : bounce
+  const jn = -(1 + restitution) * vn * share
+  const tx = -ny
+  const ty = nx
+  const slip = rvx * tx + rvy * ty - spinSum * BALL_RADIUS
+  const jt = clamp(-slip / tangentMass, -friction * jn, friction * jn)
+  return { jn, jt, tx, ty }
+}
+
+// Returns the normal impulse (0 when nothing hit).
+function collideWall(ball, wall, env) {
+  const { ux, uy } = wall
+  const dist = env.apo - (ball.x * ux + ball.y * uy)
+  if (dist >= BALL_RADIUS) return 0
+  ball.x -= ux * (BALL_RADIUS - dist)
+  ball.y -= uy * (BALL_RADIUS - dist)
+
+  // The wall moves: its surface velocity is spin x contact, plus the in/out speed when the container breathes.
+  const cx = ball.x + ux * BALL_RADIUS
+  const cy = ball.y + uy * BALL_RADIUS
+  const impulse = contactImpulse(
+    {
+      rvx: ball.vx + env.spin * cy - env.apoRate * ux,
+      rvy: ball.vy - env.spin * cx - env.apoRate * uy,
+      nx: -ux,
+      ny: -uy,
+      spinSum: ball.spin,
+    },
+    Math.min(MAX_BOUNCE, WALL_BOUNCE * env.bounce),
+    WALL_FRICTION,
+    1,
+    3,
+  )
+  if (!impulse) return 0
+  ball.vx += -ux * impulse.jn + impulse.tx * impulse.jt
+  ball.vy += -uy * impulse.jn + impulse.ty * impulse.jt
+  ball.spin -= (2 * impulse.jt) / BALL_RADIUS
+  return impulse.jn
+}
+
+// Returns the per-ball normal impulse (0 when nothing hit).
+function collidePair(a, b, env) {
+  const minDist = BALL_RADIUS * 2
+  const dx = b.x - a.x
+  if (dx > minDist || dx < -minDist) return 0
+  const dy = b.y - a.y
+  const distSq = dx * dx + dy * dy
+  if (distSq >= minDist * minDist) return 0
+
+  const dist = Math.sqrt(distSq) || 1e-6
+  const nx = dx / dist
+  const ny = dy / dist
+  const push = (minDist - dist) / 2
+  a.x -= nx * push
+  a.y -= ny * push
+  b.x += nx * push
+  b.y += ny * push
+
+  const impulse = contactImpulse(
+    { rvx: b.vx - a.vx, rvy: b.vy - a.vy, nx, ny, spinSum: a.spin + b.spin },
+    Math.min(MAX_BOUNCE, BALL_BOUNCE * env.bounce),
+    BALL_FRICTION,
+    0.5,
+    6,
+  )
+  if (!impulse) return 0
+  const jx = nx * impulse.jn + impulse.tx * impulse.jt
+  const jy = ny * impulse.jn + impulse.ty * impulse.jt
+  a.vx -= jx
+  a.vy -= jy
+  b.vx += jx
+  b.vy += jy
+  a.spin -= (2 * impulse.jt) / BALL_RADIUS
+  b.spin -= (2 * impulse.jt) / BALL_RADIUS
+  return impulse.jn
+}
+
+// Zero-G would otherwise collapse into a still clump (dense granular gases lose energy fast),
+// so balls slower than `heat` are nudged along their own heading up to that speed.
+function propel(ball, heat, dt) {
+  const speed = Math.hypot(ball.vx, ball.vy)
+  if (speed >= heat) return
+  const heading = speed > 0.05 ? Math.atan2(ball.vy, ball.vx) : Math.random() * Math.PI * 2
+  const boost = (heat - speed) * HEAT_RATE * dt
+  ball.vx += Math.cos(heading) * boost
+  ball.vy += Math.sin(heading) * boost
+}
+
+function integrate(balls, dt, gx, gy, heat) {
+  const drag = 1 - LINEAR_DRAG * dt
+  const spinDrag = 1 - SPIN_DRAG * dt
+  for (const ball of balls) {
+    if (heat > 0.01) propel(ball, heat, dt)
+    ball.vx += gx * dt
+    ball.vy += gy * dt
+    ball.vx *= drag
+    ball.vy *= drag
+    ball.spin *= spinDrag
+    ball.x += ball.vx * dt
+    ball.y += ball.vy * dt
+    ball.angle += ball.spin * dt
+  }
+}
+
+// Candidate contacts from a uniform grid, built once per step and reused across solver passes.
+function findPairs(balls) {
+  const cell = BALL_RADIUS * 3
+  const grid = new Map()
+  for (const ball of balls) {
+    const key = Math.floor(ball.x / cell) * 4096 + Math.floor(ball.y / cell)
+    const bucket = grid.get(key)
+    if (bucket) bucket.push(ball)
+    else grid.set(key, [ball])
+  }
+  const pairs = []
+  for (const ball of balls) {
+    const cx = Math.floor(ball.x / cell)
+    const cy = Math.floor(ball.y / cell)
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        for (const other of grid.get(gx * 4096 + gy) || []) {
+          if (other.id > ball.id) pairs.push([ball, other])
+        }
+      }
+    }
+  }
+  return pairs
+}
+
+function emit(state, event) {
+  if (event.jn < HIT_MIN) return
+  state.collisions++
+  if (state.events.length < MAX_EVENTS) state.events.push(event)
+}
+
+function stepWorld(state, dt) {
+  state.time += dt
+  steer(state, dt)
+  const env = { spin: state.spin, apo: state.apo, apoRate: state.apoRate, bounce: state.bounce }
+  const g = GRAVITY * state.gscale
+  integrate(state.balls, dt, Math.sin(state.gangle) * g, Math.cos(state.gangle) * g, state.heat)
+  const walls = getWalls(state.angle)
+  const pairs = findPairs(state.balls)
+  for (let pass = 0; pass < SOLVER_PASSES; pass++) {
+    const first = pass === 0
+    for (const [a, b] of pairs) {
+      const jn = collidePair(a, b, env)
+      if (first) emit(state, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, jn, a, b, wall: -1 })
+    }
+    for (const ball of state.balls) {
+      for (let i = 0; i < SIDES; i++) {
+        const jn = collideWall(ball, walls[i], env)
+        if (first) emit(state, { x: ball.x, y: ball.y, jn, a: ball, b: null, wall: i })
+      }
+    }
+  }
+}
+
+function advance(state, frameSeconds) {
+  clock += Math.min(frameSeconds, MAX_FRAME)
+  while (clock >= STEP) {
+    stepWorld(state, STEP)
+    clock -= STEP
+  }
+}
+
+// ---------- effects + sound ----------
+
+const SCALE_STEPS = [0, 2, 4, 7, 9]
+
+// Pitch follows the ball's number (and so its hue): low numbers ring low, high numbers ring high.
+function noteFreq(id) {
+  const n = Math.floor(((id - 1) / BALL_COUNT) * 15)
+  return 196 * Math.pow(2, (SCALE_STEPS[n % 5] + 12 * Math.floor(n / 5)) / 12)
+}
+
+function ping(id, strength) {
+  if (!audio.ctx) return
+  const now = audio.ctx.currentTime
+  if (now - audio.last < 0.02) return
+  audio.last = now
+  const osc = audio.ctx.createOscillator()
+  const gain = audio.ctx.createGain()
+  osc.type = 'triangle'
+  osc.frequency.value = noteFreq(id)
+  gain.gain.setValueAtTime(clamp(strength * 0.12, 0.005, 0.09), now)
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35)
+  osc.connect(gain)
+  gain.connect(audio.ctx.destination)
+  osc.start(now)
+  osc.stop(now + 0.4)
+}
+
+function enableAudio() {
+  if (audio.ctx) return
+  audio.ctx = new (window.AudioContext || window.webkitAudioContext)()
+}
+
+function spawnSparks(state, event) {
+  const count = Math.min(6, Math.floor(event.jn * 10))
+  const hue = event.a.hue
+  for (let i = 0; i < count; i++) {
+    if (state.sparks.length >= MAX_SPARKS) return
+    const dir = Math.random() * Math.PI * 2
+    const speed = 0.3 + Math.random() * 1.3
+    state.sparks.push({
+      x: event.x,
+      y: event.y,
+      vx: Math.cos(dir) * speed,
+      vy: Math.sin(dir) * speed,
+      life: 0.35 + Math.random() * 0.4,
+      hue,
+    })
+  }
+}
+
+// Physics only reports what happened; glow, sparks and notes are derived here, once per frame.
+function consumeEvents(state) {
+  for (const event of state.events) {
+    const heat = Math.min(1, event.jn * 1.6)
+    event.a.glow = Math.max(event.a.glow, heat)
+    if (event.b) event.b.glow = Math.max(event.b.glow, heat)
+    if (event.wall >= 0) state.flashes[event.wall] = Math.max(state.flashes[event.wall], Math.min(1, event.jn * 1.2))
+    if (event.jn > 0.2) spawnSparks(state, event)
+  }
+  const loudest = state.events.slice().sort((p, q) => q.jn - p.jn).slice(0, 5)
+  for (const event of loudest) ping(event.a.id, event.jn)
+  state.events.length = 0
+}
+
+function kineticEnergy(balls) {
+  let total = 0
+  for (const ball of balls) total += (ball.vx * ball.vx + ball.vy * ball.vy) / 2
+  return total / balls.length
+}
+
+function updateFx(state, dt) {
+  const fade = Math.exp(-dt * 5)
+  for (const ball of state.balls) ball.glow *= fade
+  for (let i = 0; i < SIDES; i++) state.flashes[i] *= fade
+  for (const spark of state.sparks) {
+    spark.x += spark.vx * dt
+    spark.y += spark.vy * dt
+    spark.vy += 0.8 * dt
+    spark.life -= dt
+  }
+  state.sparks = state.sparks.filter((spark) => spark.life > 0)
+  for (const ring of state.rings) {
+    ring.r += dt * 2.2
+    ring.life -= dt * 0.9
+  }
+  state.rings = state.rings.filter((ring) => ring.life > 0)
+  if (state.time - state.lastSample < 0.1) return
+  state.lastSample = state.time
+  state.energy.push(kineticEnergy(state.balls))
+  if (state.energy.length > 300) state.energy.shift()
+}
+
+// ---------- render: world layer (fading trails) ----------
+
+function fadeTrail(ctx) {
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.fillStyle = `rgba(0, 0, 0, ${TRAIL_FADE})`
+  ctx.fillRect(0, 0, W, H)
+  ctx.restore()
+}
+
+function edgePath(ctx, rotation, index, radius) {
+  const a = wallAngle(rotation, index)
+  ctx.beginPath()
+  ctx.moveTo(Math.cos(a - Math.PI / SIDES) * radius, Math.sin(a - Math.PI / SIDES) * radius)
+  ctx.lineTo(Math.cos(a + Math.PI / SIDES) * radius, Math.sin(a + Math.PI / SIDES) * radius)
+}
+
+function paintEchoes(ctx, state) {
+  ctx.lineWidth = 0.004
+  for (let k = 1; k <= 3; k++) {
+    ctx.strokeStyle = rgba(state.tint, 0.16 / k)
+    for (let i = 0; i < SIDES; i++) {
+      edgePath(ctx, -state.angle * 0.4 * k, i, state.size * (1 + 0.07 * k))
+      ctx.stroke()
+    }
+  }
+}
+
+function paintContainer(ctx, state) {
+  ctx.lineCap = 'round'
+  for (let i = 0; i < SIDES; i++) {
+    const flash = state.flashes[i]
+    ctx.strokeStyle = rgba(state.tint, 0.6 + flash * 0.4)
+    ctx.lineWidth = 0.007 + flash * 0.013
+    ctx.shadowColor = rgba(state.tint, 0.9)
+    ctx.shadowBlur = 16 + flash * 46
+    edgePath(ctx, state.angle, i, state.size)
+    ctx.stroke()
+  }
+  ctx.shadowBlur = 0
+}
+
+function paintRings(ctx, state) {
+  ctx.lineWidth = 0.012
+  for (const ring of state.rings) {
+    ctx.strokeStyle = rgba(ring.color, ring.life * 0.55)
+    ctx.beginPath()
+    ctx.arc(0, 0, ring.r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+}
+
+function paintSparks(ctx, state) {
+  ctx.globalCompositeOperation = 'lighter'
+  for (const spark of state.sparks) {
+    ctx.fillStyle = `hsla(${spark.hue}, 100%, 70%, ${Math.min(1, spark.life * 2)})`
+    ctx.beginPath()
+    ctx.arc(spark.x, spark.y, 0.008, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.globalCompositeOperation = 'source-over'
+}
+
+function paintBall(ctx, ball) {
+  const r = BALL_RADIUS
+  if (ball.glow > 0.04) {
+    const halo = ctx.createRadialGradient(ball.x, ball.y, r * 0.6, ball.x, ball.y, r * 2.6)
+    halo.addColorStop(0, `hsla(${ball.hue}, 100%, 65%, ${ball.glow * 0.55})`)
+    halo.addColorStop(1, `hsla(${ball.hue}, 100%, 65%, 0)`)
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.fillStyle = halo
+    ctx.beginPath()
+    ctx.arc(ball.x, ball.y, r * 2.6, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalCompositeOperation = 'source-over'
+  }
+
+  const shade = ctx.createRadialGradient(ball.x - r * 0.35, ball.y - r * 0.4, r * 0.1, ball.x, ball.y, r)
+  shade.addColorStop(0, `hsl(${ball.hue} 92% 82%)`)
+  shade.addColorStop(0.55, `hsl(${ball.hue} 84% 63%)`)
+  shade.addColorStop(1, `hsl(${ball.hue} 78% 44%)`)
+  ctx.fillStyle = shade
+  ctx.beginPath()
+  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2)
+  ctx.fill()
+
+  if (ball.glow > 0.04) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${ball.glow * 0.4})`
+    ctx.fill()
+  }
+
+  // A small dot on the rim shows the ball spinning; the number itself never rotates.
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.65)'
+  ctx.beginPath()
+  ctx.arc(ball.x + Math.cos(ball.angle) * r * 0.76, ball.y + Math.sin(ball.angle) * r * 0.76, r * 0.1, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+function paintWorld(ctx, state) {
+  ctx.save()
+  ctx.translate(CX, CY)
+  ctx.scale(UNIT, UNIT)
+  paintEchoes(ctx, state)
+  paintContainer(ctx, state)
+  paintRings(ctx, state)
+  for (const ball of state.balls) paintBall(ctx, ball)
+  paintSparks(ctx, state)
+  ctx.restore()
+}
+
+// ---------- render: main canvas ----------
+
+function paintBackdrop(g) {
+  const ctx = g.drawingContext
+  const sky = ctx.createLinearGradient(0, 0, 0, H)
+  sky.addColorStop(0, '#06070d')
+  sky.addColorStop(0.5, '#0b0e1c')
+  sky.addColorStop(1, '#05060b')
+  ctx.fillStyle = sky
+  ctx.fillRect(0, 0, W, H)
+  for (let i = 0; i < 170; i++) {
+    ctx.fillStyle = `rgba(200, 215, 255, ${0.05 + Math.random() * 0.3})`
+    ctx.fillRect(Math.random() * W, Math.random() * H, 1 + Math.random() * 1.6, 1 + Math.random() * 1.6)
+  }
+  const vignette = ctx.createRadialGradient(CX, CY, 420, CX, CY, 1200)
+  vignette.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  vignette.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+  ctx.fillStyle = vignette
+  ctx.fillRect(0, 0, W, H)
+}
+
+// Tinted glow behind the container, plus a faint glass fill inside it.
+function paintGlass(ctx, state) {
+  const glow = ctx.createRadialGradient(CX, CY, 60, CX, CY, 760)
+  glow.addColorStop(0, rgba(state.tint, 0.2))
+  glow.addColorStop(1, rgba(state.tint, 0))
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.fillStyle = glow
+  ctx.fillRect(0, 0, W, H)
+  ctx.globalCompositeOperation = 'source-over'
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.03)'
+  ctx.beginPath()
+  for (let i = 0; i < SIDES; i++) {
+    const a = wallAngle(state.angle, i + 0.5)
+    const x = CX + Math.cos(a) * state.size * UNIT
+    const y = CY + Math.sin(a) * state.size * UNIT
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.fill()
+}
+
+// Numbers live on the main canvas, outside the fading trail layer, so they stay crisp and upright.
+function paintNumbers(ctx, state) {
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = 'rgba(10, 12, 26, 0.88)'
+  for (const ball of state.balls) {
+    const size = UNIT * BALL_RADIUS * (ball.id > 99 ? 0.8 : 1.05)
+    ctx.font = `800 ${size}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`
+    ctx.fillText(String(ball.id), CX + ball.x * UNIT, CY + (ball.y + BALL_RADIUS * 0.06) * UNIT)
+  }
+}
+
+function setText(ctx, size, weight, fill, align, spacing) {
+  ctx.font = `${weight} ${size}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`
+  ctx.fillStyle = fill
+  ctx.textAlign = align
+  ctx.textBaseline = 'alphabetic'
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${spacing}px`
+}
+
+function paintBadge(ctx, state) {
+  setText(ctx, 26, 700, '#fff', 'left', 4)
+  const width = ctx.measureText(MODEL_LABEL).width + 70
+  ctx.fillStyle = rgba(state.tint, 0.16)
+  ctx.strokeStyle = rgba(state.tint, 0.7)
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.arc(70 + 27, 92, 27, Math.PI / 2, Math.PI * 1.5)
+  ctx.arc(70 + width - 27, 92, 27, -Math.PI / 2, Math.PI / 2)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = rgba(state.tint, 1)
+  ctx.beginPath()
+  ctx.arc(70 + 30, 92, 7, 0, Math.PI * 2)
+  ctx.fill()
+  setText(ctx, 26, 700, '#fff', 'left', 4)
+  ctx.fillText(MODEL_LABEL, 70 + 52, 101)
+}
+
+function paintTitle(ctx, state) {
+  const gradient = ctx.createLinearGradient(70, 0, 1010, 0)
+  gradient.addColorStop(0, '#ffffff')
+  gradient.addColorStop(1, rgba(state.tint, 1))
+  setText(ctx, 150, 900, gradient, 'left', -2)
+  ctx.fillText('200 BALLS', 64, 265)
+  setText(ctx, 40, 600, 'rgba(200, 210, 255, 0.6)', 'left', 9)
+  ctx.fillText('ONE SPINNING HEPTAGON', 72, 340)
+}
+
+function paintSparkline(ctx, state) {
+  const { energy } = state
+  const left = 70
+  const width = 940
+  const top = 1700
+  const height = 80
+  ctx.strokeStyle = 'rgba(200, 210, 255, 0.14)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(left, top + height)
+  ctx.lineTo(left + width, top + height)
+  ctx.stroke()
+  if (energy.length < 2) return
+  ctx.strokeStyle = rgba(state.tint, 1)
+  ctx.lineWidth = 3
+  ctx.lineJoin = 'round'
+  ctx.shadowColor = rgba(state.tint, 0.9)
+  ctx.shadowBlur = 14
+  ctx.beginPath()
+  energy.forEach((value, i) => {
+    const x = left + (i / 299) * width
+    const y = top + height - clamp(value / 0.08, 0, 1) * height
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+  ctx.shadowBlur = 0
+}
+
+function formatTime(seconds) {
+  const whole = Math.floor(seconds)
+  const mm = String(Math.floor(whole / 60)).padStart(2, '0')
+  const ss = String(whole % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+}
+
+function paintStat(ctx, label, value, x) {
+  setText(ctx, 20, 700, 'rgba(200, 210, 255, 0.5)', 'left', 5)
+  ctx.fillText(label, x, 1834)
+  setText(ctx, 50, 800, '#fff', 'left', 0)
+  ctx.fillText(value, x, 1888)
+}
+
+function paintFooter(ctx, state) {
+  const { index, act, local } = actAt(state.time)
+  setText(ctx, 24, 700, 'rgba(200, 210, 255, 0.55)', 'left', 6)
+  ctx.fillText(`ACT ${index + 1} / ${ACTS.length}`, 72, 1528)
+  setText(ctx, 96, 900, rgba(state.tint, 1), 'left', -1)
+  ctx.fillText(act.name, 66, 1620)
+
+  const progress = Number.isFinite(act.dur) ? local / act.dur : 1
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+  ctx.fillRect(70, 1650, 940, 6)
+  ctx.fillStyle = rgba(state.tint, 1)
+  ctx.fillRect(70, 1650, 940 * clamp(progress, 0, 1), 6)
+
+  setText(ctx, 20, 700, 'rgba(200, 210, 255, 0.5)', 'left', 5)
+  ctx.fillText('KINETIC ENERGY', 72, 1690)
+  paintSparkline(ctx, state)
+  paintStat(ctx, 'COLLISIONS', state.collisions.toLocaleString('en-US'), 72)
+  paintStat(ctx, 'TIME', formatTime(state.time), 560)
+  paintStat(ctx, 'BALLS', String(BALL_COUNT), 800)
+}
+
+// ---------- p5 hooks ----------
+
+function fitCanvas() {
+  const k = Math.min(window.innerWidth / W, window.innerHeight / H)
+  const el = drawingContext.canvas
+  el.style.width = `${W * k}px`
+  el.style.height = `${H * k}px`
+}
+
+function setup() {
+  pixelDensity(1)
+  createCanvas(W, H)
+  trail = createGraphics(W, H)
+  trailCtx = trail.drawingContext
+  backdrop = createGraphics(W, H)
+  paintBackdrop(backdrop)
+  world = createWorld()
+  fitCanvas()
+}
+
+function draw() {
+  const seconds = Math.min(deltaTime / 1000, MAX_FRAME)
+  advance(world, seconds)
+  consumeEvents(world)
+  updateFx(world, seconds)
+
+  fadeTrail(trailCtx)
+  paintWorld(trailCtx, world)
+
+  image(backdrop, 0, 0)
+  paintGlass(drawingContext, world)
+  image(trail, 0, 0)
+  paintNumbers(drawingContext, world)
+  paintBadge(drawingContext, world)
+  paintTitle(drawingContext, world)
+  paintFooter(drawingContext, world)
+}
+
+function windowResized() {
+  fitCanvas()
+}
+
+function mousePressed() {
+  enableAudio()
+}
+
+function keyPressed() {
+  enableAudio()
+  if (key !== 'r' && key !== 'R') return
+  world = createWorld()
+  clock = 0
+  trailCtx.clearRect(0, 0, W, H)
+}
+</script>
+</body>
+</html>
